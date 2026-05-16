@@ -62,14 +62,7 @@ pub fn draw_text_center(surface: &mut TextSurface<'_>, font: &Font, spec: TextSp
     draw_text_baseline(surface, font, &text, spec.font_size, origin, spec.color);
 }
 
-fn draw_text_baseline(
-    surface: &mut TextSurface<'_>,
-    font: &Font,
-    text: &str,
-    font_size: f32,
-    origin: TextOrigin,
-    color: Color,
-) {
+fn draw_text_baseline(surface: &mut TextSurface<'_>, font: &Font, text: &str, font_size: f32, origin: TextOrigin, color: Color) {
     let mut pen_x = origin.x;
 
     for ch in text.chars() {

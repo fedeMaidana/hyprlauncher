@@ -34,11 +34,7 @@ fn application_dirs() -> Vec<PathBuf> {
         .and_then(|v| v.into_string().ok())
         .unwrap_or_else(|| "/usr/local/share:/usr/share".to_owned());
 
-    dirs.extend(
-        data_dirs
-            .split(':')
-            .map(|base| PathBuf::from(base).join("applications")),
-    );
+    dirs.extend(data_dirs.split(':').map(|base| PathBuf::from(base).join("applications")));
     dirs
 }
 

@@ -5,7 +5,7 @@ mod text;
 use fontdue::Font;
 use image::RgbaImage;
 
-use crate::{model::Model, theme::Theme};
+use crate::{desktop::IconCache, model::Model, theme::Theme};
 
 use painter::Painter;
 
@@ -17,6 +17,7 @@ pub struct RenderRequest<'a> {
     pub model: &'a Model,
     pub theme: &'a Theme,
     pub wallpaper: Option<&'a RgbaImage>,
+    pub icons: &'a IconCache,
     pub font: &'a Font,
 }
 
@@ -26,6 +27,6 @@ pub fn render_launcher(request: RenderRequest<'_>) {
         return;
     };
 
-    painter.draw(request.model, request.theme, request.wallpaper);
+    painter.draw(request.model, request.theme, request.wallpaper, request.icons);
     painter.copy_to_wayland_canvas(request.canvas);
 }

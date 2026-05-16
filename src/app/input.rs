@@ -1,6 +1,8 @@
 use smithay_client_toolkit::{
-    seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
-    seat::pointer::{BTN_LEFT, PointerEvent, PointerEventKind, PointerHandler},
+    seat::{
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
+        pointer::{BTN_LEFT, CursorIcon, PointerEvent, PointerEventKind, PointerHandler},
+    },
     shell::WaylandSurface,
 };
 use wayland_client::{
@@ -39,14 +41,7 @@ impl KeyboardHandler for AppState {
         }
     }
 
-    fn press_key(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        _: u32,
-        event: KeyEvent,
-    ) {
+    fn press_key(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
         if let Some(msg) = key_event_to_msg(&event) {
             self.dispatch(qh, msg);
         }
@@ -63,8 +58,7 @@ impl KeyboardHandler for AppState {
         self.press_key(conn, qh, keyboard, serial, event);
     }
 
-    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {
-    }
+    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
 
     fn update_modifiers(
         &mut self,
@@ -82,7 +76,7 @@ impl KeyboardHandler for AppState {
 impl PointerHandler for AppState {
     fn pointer_frame(
         &mut self,
-        _conn: &Connection,
+        conn: &Connection,
         qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
@@ -93,16 +87,49 @@ impl PointerHandler for AppState {
             }
 
             let (x, y) = event.position;
+
             match event.kind {
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                PointerEventKind::Enter { .. } => {
+                    self.update_cursor_for_position(conn, x, y);
                     self.dispatch(qh, Msg::HoverAt { x, y });
                 }
-                PointerEventKind::Leave { .. } => self.dispatch(qh, Msg::ClearHover),
+                PointerEventKind::Motion { .. } => {
+                    self.update_cursor_for_position(conn, x, y);
+                    self.dispatch(qh, Msg::HoverAt { x, y });
+                }
+                PointerEventKind::Leave { .. } => {
+                    self.dispatch(qh, Msg::ClearHover);
+                }
                 PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
+                    self.update_cursor_for_position(conn, x, y);
                     self.dispatch(qh, Msg::PointerPressedAt { x, y });
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+impl AppState {
+    fn update_cursor_for_position(&mut self, conn: &Connection, x: f64, y: f64) {
+        let layout = self.model.layout();
+
+        let icon = if layout.search.contains(x, y) {
+            CursorIcon::Text
+        } else {
+            CursorIcon::Default
+        };
+
+        self.set_cursor_icon(conn, icon);
+    }
+
+    fn set_cursor_icon(&mut self, conn: &Connection, icon: CursorIcon) {
+        let Some(pointer) = self.themed_pointer.as_mut() else {
+            return;
+        };
+
+        if let Err(err) = pointer.set_cursor(conn, icon) {
+            log::debug!("no se pudo setear cursor {:?}: {err:?}", icon);
         }
     }
 }
@@ -118,9 +145,9 @@ pub(super) fn key_event_to_msg(event: &KeyEvent) -> Option<Msg> {
     }
 
     let text = event.utf8.as_deref()?;
-    let mut chars = text.chars();
-    let ch = chars.next()?;
-    if chars.next().is_none() {
+    let ch = text.chars().next()?;
+
+    if text.chars().count() == 1 && !ch.is_control() {
         Some(Msg::Type(ch))
     } else {
         None

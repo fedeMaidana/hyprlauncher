@@ -13,10 +13,7 @@ pub struct DesktopEntry {
 
 impl DesktopEntry {
     pub fn subtitle(&self) -> &str {
-        self.comment
-            .as_deref()
-            .or(self.generic_name.as_deref())
-            .unwrap_or(&self.exec)
+        self.comment.as_deref().or(self.generic_name.as_deref()).unwrap_or(&self.exec)
     }
 
     pub fn rank(&self, query: &str) -> Option<i32> {

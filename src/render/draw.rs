@@ -1,5 +1,7 @@
 use image::RgbaImage;
-use tiny_skia::{FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Transform};
+use tiny_skia::{
+    FillRule, FilterQuality, LineCap, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Stroke, Transform,
+};
 
 use crate::{
     geometry::{Corners, Rect},
@@ -21,6 +23,65 @@ pub fn fill_round_rect(pixmap: &mut Pixmap, rect: Rect, radius: i32, color: Colo
 }
 
 pub fn draw_image_cover(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &RgbaImage) {
+    draw_image(pixmap, rect, radius, image, ImageFit::Cover);
+}
+
+pub fn draw_image_contain(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &RgbaImage) {
+    draw_image(pixmap, rect, radius, image, ImageFit::Contain);
+}
+
+pub fn draw_search_icon(pixmap: &mut Pixmap, rect: Rect, color: Color, stroke_width: i32) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+
+    let size = rect.w.min(rect.h) as f32;
+    let stroke_width = stroke_width.max(1) as f32;
+
+    let cx = rect.x as f32 + size * 0.42;
+    let cy = rect.y as f32 + size * 0.42;
+    let radius = size * 0.22;
+
+    let circle = Rect::new(
+        (cx - radius).round() as i32,
+        (cy - radius).round() as i32,
+        (radius * 2.0).round() as i32,
+        (radius * 2.0).round() as i32,
+    );
+
+    let Some(circle_path) = round_rect_path(circle, circle.w / 2, Corners::ALL) else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+
+    let stroke = Stroke {
+        width: stroke_width,
+        line_cap: LineCap::Round,
+        ..Default::default()
+    };
+
+    pixmap.stroke_path(&circle_path, &paint, &stroke, Transform::identity(), None);
+
+    let mut handle = PathBuilder::new();
+
+    handle.move_to(cx + radius * 0.68, cy + radius * 0.68);
+    handle.line_to(rect.x as f32 + size * 0.76, rect.y as f32 + size * 0.76);
+
+    if let Some(handle_path) = handle.finish() {
+        pixmap.stroke_path(&handle_path, &paint, &stroke, Transform::identity(), None);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ImageFit {
+    Cover,
+    Contain,
+}
+
+fn draw_image(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &RgbaImage, fit: ImageFit) {
     if rect.w <= 0 || rect.h <= 0 || image.width() == 0 || image.height() == 0 {
         return;
     }
@@ -31,24 +92,32 @@ pub fn draw_image_cover(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &Rg
 
     let scale_x = rect.w as f32 / image.width() as f32;
     let scale_y = rect.h as f32 / image.height() as f32;
-    let scale = scale_x.max(scale_y);
+
+    let scale = match fit {
+        ImageFit::Cover => scale_x.max(scale_y),
+        ImageFit::Contain => scale_x.min(scale_y),
+    };
 
     let scaled_w = image.width() as f32 * scale;
     let scaled_h = image.height() as f32 * scale;
+
     let dx = rect.x as f32 + (rect.w as f32 - scaled_w) / 2.0;
     let dy = rect.y as f32 + (rect.h as f32 - scaled_h) / 2.0;
+
     let transform = Transform::from_scale(scale, scale).post_translate(dx, dy);
 
     let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else {
         return;
     };
+
     let Some(clip) = round_rect_path(rect, radius, Corners::ALL) else {
         return;
     };
+
     mask.fill_path(&clip, FillRule::Winding, true, Transform::identity());
 
     let paint = PixmapPaint {
-        quality: FilterQuality::Bilinear,
+        quality: FilterQuality::Bicubic,
         ..PixmapPaint::default()
     };
 

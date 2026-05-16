@@ -1,5 +1,7 @@
 use std::{env, path::PathBuf};
 
+use crate::style;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub width: u32,
@@ -11,9 +13,9 @@ pub struct Config {
 impl Config {
     pub fn load() -> Self {
         Self {
-            width: 760,
-            height: 420,
-            max_results: 8,
+            width: style::surface::WIDTH_HINT,
+            height: style::surface::HEIGHT_HINT,
+            max_results: usize::MAX,
             hyprcolor_json: default_hyprcolor_json(),
         }
     }

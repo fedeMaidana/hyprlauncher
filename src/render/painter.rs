@@ -1,9 +1,9 @@
 use fontdue::Font;
-use image::RgbaImage;
+use image::{RgbaImage, imageops::FilterType};
 use tiny_skia::Pixmap;
 
 use crate::{
-    desktop::DesktopEntry,
+    desktop::{DesktopEntry, IconCache},
     geometry::Rect,
     layout::LauncherLayout,
     model::Model,
@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    draw::{draw_image_cover, fill_round_rect},
+    draw::{draw_image_contain, draw_image_cover, draw_search_icon, fill_round_rect},
     text::{TextSpec, TextSurface, draw_text_center, draw_text_left},
 };
 
@@ -31,19 +31,15 @@ impl<'a> Painter<'a> {
         })
     }
 
-    pub fn draw(&mut self, model: &Model, theme: &Theme, wallpaper: Option<&RgbaImage>) {
-        let layout = LauncherLayout::new(
-            model.logical_width,
-            model.logical_height,
-            model.preferred_width,
-            model.preferred_height,
-        );
+    pub fn draw(&mut self, model: &Model, theme: &Theme, wallpaper: Option<&RgbaImage>, icons: &IconCache) {
+        let layout =
+            LauncherLayout::new(model.logical_width, model.logical_height, model.preferred_width, model.preferred_height);
 
         self.fill_fullscreen_scrim(theme.background.with_alpha(88));
         self.draw_panel(&layout, theme);
         self.draw_preview(&layout, theme, wallpaper);
         self.draw_search(&layout, model, theme);
-        self.draw_entries(&layout, model, theme);
+        self.draw_entries(&layout, model, theme, icons);
         self.draw_error(&layout, model, theme);
     }
 
@@ -53,6 +49,7 @@ impl<'a> Painter<'a> {
 
     fn fill_fullscreen_scrim(&mut self, color: Color) {
         let rect = Rect::new(0, 0, self.logical(self.pixmap.width()), self.logical(self.pixmap.height()));
+
         self.fill_round(rect, 0, color);
     }
 
@@ -68,52 +65,24 @@ impl<'a> Painter<'a> {
             self.image_cover(layout.preview, style::surface::PREVIEW_RADIUS, wallpaper);
             self.fill_round(layout.preview, style::surface::PREVIEW_RADIUS, theme.background.with_alpha(64));
         } else {
-            self.fill_round(
-                layout.preview.inset(12),
-                style::surface::PREVIEW_RADIUS - 6,
-                theme.surface_variant.with_alpha(120),
-            );
-        }
-
-        let title =
-            Rect::new(layout.preview.x + 20, layout.preview.y + layout.preview.h - 62, layout.preview.w - 40, 28);
-        let subtitle = Rect::new(layout.preview.x + 20, title.y + 26, layout.preview.w - 40, 22);
-        self.text_left(title, "hyprlauncher", style::font_size::TITLE, theme.foreground);
-        self.text_left(subtitle, "Rust + SCTK", style::font_size::HINT, theme.muted);
-    }
-
-    fn draw_search(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme) {
-        self.fill_round(layout.search, style::surface::ITEM_RADIUS, theme.surface_variant);
-
-        let orb = Rect::new(
-            layout.search.x + 15,
-            layout.search.y + (layout.search.h - style::spacing::ICON_SIZE) / 2,
-            style::spacing::ICON_SIZE,
-            style::spacing::ICON_SIZE,
-        );
-        self.fill_round(orb, style::spacing::ICON_SIZE / 2, theme.accent);
-        self.text_center(orb, "⌕", 16.0, theme.background.with_alpha(230));
-
-        let text_rect = Rect::new(layout.search.x + 54, layout.search.y, layout.search.w - 70, layout.search.h);
-        if model.launcher.query().is_empty() {
-            self.text_left(text_rect, "Buscar aplicación", style::font_size::QUERY, theme.muted);
-        } else {
-            self.text_left(text_rect, model.launcher.query(), style::font_size::QUERY, theme.foreground);
+            self.fill_round(layout.preview.inset(12), style::surface::PREVIEW_RADIUS - 6, theme.surface_variant.with_alpha(120));
         }
     }
 
-    fn draw_entries(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme) {
-        let visible = model.launcher.visible_entries();
+    fn draw_entries(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, icons: &IconCache) {
+        let visible = model.launcher.window_entries(layout.visible_rows());
+
         if visible.is_empty() {
             let rect = Rect::new(layout.list.x, layout.list.y + 28, layout.list.w, 40);
             self.text_center(rect, "Sin resultados", style::font_size::QUERY, theme.muted);
             return;
         }
 
-        for (index, entry) in visible.iter().enumerate() {
-            let row = layout.row_rect(index);
-            let selected = index == model.launcher.selected();
-            let hovered = model.launcher.hovered() == Some(index);
+        for (row_index, (entry_index, entry)) in visible.iter().enumerate() {
+            let row = layout.row_rect(row_index);
+            let selected = *entry_index == model.launcher.selected();
+            let hovered = model.launcher.hovered() == Some(*entry_index);
+
             let row_color = if selected {
                 theme.accent_soft
             } else if hovered {
@@ -126,38 +95,38 @@ impl<'a> Painter<'a> {
                 self.fill_round(row, style::surface::ITEM_RADIUS, row_color);
             }
 
-            self.draw_entry(row, entry, selected, theme);
+            self.draw_entry(row, entry, selected, theme, icons.image_for(entry));
         }
     }
 
-    fn draw_entry(&mut self, row: Rect, entry: &DesktopEntry, selected: bool, theme: &Theme) {
-        let icon = Rect::new(row.x + 14, row.y + (row.h - 28) / 2, 28, 28);
-        let icon_bg = if selected {
-            theme.background.with_alpha(225)
+    fn draw_entry(&mut self, row: Rect, entry: &DesktopEntry, selected: bool, theme: &Theme, app_icon: Option<&RgbaImage>) {
+        let icon = Rect::new(row.x + 16, row.y + (row.h - 26) / 2, 26, 26);
+
+        if let Some(app_icon) = app_icon {
+            self.image_contain_lanczos(icon, 0, app_icon);
         } else {
-            theme.surface_variant
-        };
-        let icon_fg = if selected { theme.accent } else { theme.foreground };
-        self.fill_round(icon, 14, icon_bg);
+            let initial = entry
+                .name
+                .chars()
+                .find(|ch| ch.is_alphanumeric())
+                .map(|ch| ch.to_uppercase().collect::<String>())
+                .unwrap_or_else(|| "•".to_owned());
 
-        let initial = entry
-            .name
-            .chars()
-            .find(|ch| ch.is_alphanumeric())
-            .map(|ch| ch.to_uppercase().collect::<String>())
-            .unwrap_or_else(|| "•".to_owned());
-        self.text_center(icon, &initial, 13.0, icon_fg);
+            self.text_center(icon, &initial, 11.0, theme.muted);
+        }
 
-        let text_x = icon.x + icon.w + 12;
+        let text_x = icon.x + icon.w + 16;
         let title = Rect::new(text_x, row.y + 4, row.x + row.w - text_x - 12, 22);
         let subtitle = Rect::new(text_x, row.y + 23, row.x + row.w - text_x - 12, 18);
+
         let fg = if selected {
-            theme.background.with_alpha(245)
+            Color::from_rgba(255, 255, 255, 245)
         } else {
             theme.foreground
         };
+
         let muted = if selected {
-            theme.background.with_alpha(170)
+            Color::from_rgba(255, 255, 255, 175)
         } else {
             theme.muted
         };
@@ -172,6 +141,7 @@ impl<'a> Painter<'a> {
         };
 
         let rect = Rect::new(layout.panel.x + 22, layout.panel.y + layout.panel.h - 28, layout.panel.w - 44, 18);
+
         self.text_left(rect, error, style::font_size::HINT, theme.danger);
     }
 
@@ -189,11 +159,109 @@ impl<'a> Painter<'a> {
         draw_image_cover(&mut self.pixmap, rect, radius, image);
     }
 
+    fn image_contain_lanczos(&mut self, rect: Rect, radius: i32, image: &RgbaImage) {
+        let rect = self.scale_rect(rect);
+        let radius = self.scale_len(radius);
+
+        if rect.w <= 0 || rect.h <= 0 || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+
+        let src_w = image.width() as f32;
+        let src_h = image.height() as f32;
+
+        let scale = (rect.w as f32 / src_w).min(rect.h as f32 / src_h);
+
+        let out_w = (src_w * scale).round().max(1.0) as u32;
+        let out_h = (src_h * scale).round().max(1.0) as u32;
+
+        let resized = image::imageops::resize(image, out_w, out_h, FilterType::Lanczos3);
+
+        let draw_rect =
+            Rect::new(rect.x + (rect.w - out_w as i32) / 2, rect.y + (rect.h - out_h as i32) / 2, out_w as i32, out_h as i32);
+
+        draw_image_contain(&mut self.pixmap, draw_rect, radius, &resized);
+    }
+
+    fn draw_search(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme) {
+        let (border_color, fill_color, text_color, placeholder_color) = if model.search_focused {
+            (theme.accent.with_alpha(170), theme.surface_variant, theme.foreground, theme.muted)
+        } else {
+            (
+                theme.panel_border.with_alpha(120),
+                theme.surface.with_alpha(210),
+                theme.foreground.with_alpha(220),
+                theme.muted.with_alpha(210),
+            )
+        };
+
+        self.fill_round(layout.search, style::surface::ITEM_RADIUS + 1, border_color);
+
+        self.fill_round(layout.search.inset(1), style::surface::ITEM_RADIUS, fill_color);
+
+        let orb = Rect::new(
+            layout.search.x + 15,
+            layout.search.y + (layout.search.h - style::spacing::ICON_SIZE) / 2,
+            style::spacing::ICON_SIZE,
+            style::spacing::ICON_SIZE,
+        );
+
+        self.fill_round(orb, style::spacing::ICON_SIZE / 2, theme.accent);
+        self.search_icon(orb.inset(7), theme.foreground.with_alpha(245));
+
+        let text_rect = Rect::new(layout.search.x + 54, layout.search.y, layout.search.w - 70, layout.search.h);
+
+        if model.launcher.query().is_empty() {
+            let placeholder_rect = if model.search_focused {
+                Rect::new(text_rect.x + 14, text_rect.y, text_rect.w - 14, text_rect.h)
+            } else {
+                text_rect
+            };
+
+            self.text_left(placeholder_rect, "Buscar aplicación", style::font_size::QUERY, placeholder_color);
+        } else {
+            self.text_left(text_rect, model.launcher.query(), style::font_size::QUERY, text_color);
+        }
+
+        if model.search_focused {
+            self.draw_search_caret(text_rect, model, theme);
+        }
+    }
+
+    fn draw_search_caret(&mut self, text_rect: Rect, model: &Model, theme: &Theme) {
+        let query = model.launcher.query();
+
+        let x = if query.is_empty() {
+            text_rect.x + 2
+        } else {
+            text_rect.x + self.measure_text_width(query, style::font_size::QUERY) + 6
+        };
+
+        let caret = Rect::new(x, text_rect.y + (text_rect.h - 20) / 2, 2, 20);
+
+        self.fill_round(caret, 1, theme.accent);
+    }
+
+    fn measure_text_width(&self, text: &str, size: f32) -> i32 {
+        let width = text.chars().map(|ch| self.font.metrics(ch, size).advance_width).sum::<f32>();
+
+        width.round() as i32
+    }
+
+    fn search_icon(&mut self, rect: Rect, color: Color) {
+        let rect = self.scale_rect(rect);
+        let stroke_width = self.scale_len(2);
+
+        draw_search_icon(&mut self.pixmap, rect, color, stroke_width);
+    }
+
     fn text_left(&mut self, rect: Rect, text: &str, size: f32, color: Color) {
         let width = self.pixmap.width();
         let height = self.pixmap.height();
         let rect = self.scale_rect(rect);
+
         let mut surface = TextSurface::new(self.pixmap.data_mut(), width, height);
+
         draw_text_left(
             &mut surface,
             self.font,
@@ -210,7 +278,9 @@ impl<'a> Painter<'a> {
         let width = self.pixmap.width();
         let height = self.pixmap.height();
         let rect = self.scale_rect(rect);
+
         let mut surface = TextSurface::new(self.pixmap.data_mut(), width, height);
+
         draw_text_center(
             &mut surface,
             self.font,

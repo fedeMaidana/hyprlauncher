@@ -1,23 +1,24 @@
 use smithay_client_toolkit::{
     compositor::CompositorHandler,
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
+    delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{Capability, SeatHandler, SeatState},
+    seat::{Capability, SeatHandler, SeatState, pointer::ThemeSpec},
     shell::{
         WaylandSurface,
         wlr_layer::{LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
     },
     shm::{Shm, ShmHandler},
 };
+
 use wayland_client::{
     Connection, QueueHandle,
     protocol::{wl_output, wl_seat, wl_surface},
 };
 
-use crate::{app::AppState, model::Msg, style};
+use crate::{app::AppState, model::Msg};
 
 impl CompositorHandler for AppState {
     fn scale_factor_changed(
@@ -71,7 +72,9 @@ impl OutputHandler for AppState {
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
 }
 
@@ -89,10 +92,14 @@ impl LayerShellHandler for AppState {
         _serial: u32,
     ) {
         let (w, h) = configure.new_size;
-        let width = if w == 0 { style::surface::WIDTH_HINT } else { w };
-        let height = if h == 0 { style::surface::HEIGHT_HINT } else { h };
 
-        self.dispatch(qh, Msg::Configured { width, height });
+        self.dispatch(
+            qh,
+            Msg::Configured {
+                width: w.max(1),
+                height: h.max(1),
+            },
+        );
     }
 }
 
@@ -103,34 +110,28 @@ impl SeatHandler for AppState {
 
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 
-    fn new_capability(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        seat: wl_seat::WlSeat,
-        capability: Capability,
-    ) {
+    fn new_capability(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             match self.seat_state.get_keyboard(qh, &seat, None) {
                 Ok(keyboard) => self.keyboard = Some(keyboard),
                 Err(err) => log::warn!("no se pudo crear keyboard: {err:?}"),
             }
         }
-        if capability == Capability::Pointer && self.pointer.is_none() {
-            match self.seat_state.get_pointer(qh, &seat) {
-                Ok(pointer) => self.pointer = Some(pointer),
-                Err(err) => log::warn!("no se pudo crear pointer: {err:?}"),
+
+        if capability == Capability::Pointer && self.themed_pointer.is_none() {
+            let surface = self.compositor.create_surface(qh);
+
+            match self
+                .seat_state
+                .get_pointer_with_theme(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default())
+            {
+                Ok(pointer) => self.themed_pointer = Some(pointer),
+                Err(err) => log::warn!("no se pudo crear themed pointer: {err:?}"),
             }
         }
     }
 
-    fn remove_capability(
-        &mut self,
-        _conn: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        capability: Capability,
-    ) {
+    fn remove_capability(&mut self, _conn: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, capability: Capability) {
         if capability == Capability::Keyboard
             && let Some(keyboard) = self.keyboard.take()
         {
@@ -138,9 +139,9 @@ impl SeatHandler for AppState {
         }
 
         if capability == Capability::Pointer
-            && let Some(pointer) = self.pointer.take()
+            && let Some(pointer) = self.themed_pointer.take()
         {
-            pointer.release();
+            pointer.pointer().release();
         }
     }
 
@@ -157,6 +158,7 @@ impl ProvidesRegistryState for AppState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
+
     registry_handlers![OutputState, SeatState];
 }
 

@@ -20,8 +20,8 @@ struct HyprcolorPalette {
 
 pub fn load(path: &Path) -> Result<Theme> {
     let content = fs::read_to_string(path).with_context(|| format!("no se pudo leer {}", path.display()))?;
-    let palette: HyprcolorPalette = serde_json::from_str(&content)
-        .with_context(|| format!("{} no tiene formato hyprcolor válido", path.display()))?;
+    let palette: HyprcolorPalette =
+        serde_json::from_str(&content).with_context(|| format!("{} no tiene formato hyprcolor válido", path.display()))?;
 
     let background = parse("background", &palette.background)?;
     let foreground = parse("foreground", &palette.foreground)?;

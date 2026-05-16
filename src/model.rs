@@ -33,6 +33,7 @@ pub struct Model {
     pub preferred_width: u32,
     pub preferred_height: u32,
     pub configured: bool,
+    pub search_focused: bool,
     pub error: Option<String>,
 }
 
@@ -46,41 +47,92 @@ impl Model {
             preferred_width,
             preferred_height,
             configured: false,
+            search_focused: false,
             error: None,
         }
     }
 
-    fn layout(&self) -> LauncherLayout {
+    pub fn layout(&self) -> LauncherLayout {
         LauncherLayout::new(self.logical_width, self.logical_height, self.preferred_width, self.preferred_height)
+    }
+
+    fn visible_rows(&self) -> usize {
+        self.layout().visible_rows()
     }
 }
 
 pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
-        Msg::Type(ch) => redraw_if(model.launcher.push_char(ch)),
-        Msg::Backspace => redraw_if(model.launcher.backspace()),
-        Msg::SelectNext => redraw_if(model.launcher.select_next()),
-        Msg::SelectPrev => redraw_if(model.launcher.select_prev()),
+        Msg::Type(ch) => {
+            model.search_focused = true;
+            let changed = model.launcher.push_char(ch);
+            let scrolled = model.launcher.ensure_selected_visible(model.visible_rows());
+            redraw_if(changed || scrolled)
+        }
+        Msg::Backspace => {
+            model.search_focused = true;
+            let changed = model.launcher.backspace();
+            let scrolled = model.launcher.ensure_selected_visible(model.visible_rows());
+            redraw_if(changed || scrolled)
+        }
+        Msg::SelectNext => {
+            let changed = model.launcher.select_next();
+            let scrolled = model.launcher.ensure_selected_visible(model.visible_rows());
+            redraw_if(changed || scrolled)
+        }
+        Msg::SelectPrev => {
+            let changed = model.launcher.select_prev();
+            let scrolled = model.launcher.ensure_selected_visible(model.visible_rows());
+            redraw_if(changed || scrolled)
+        }
         Msg::HoverAt { x, y } => {
-            let hovered = model.layout().row_at(x, y, model.launcher.visible_count());
+            let layout = model.layout();
+            let window_size = layout.visible_rows();
+            let row_count = model.launcher.window_count(window_size);
+
+            let hovered = layout
+                .row_at(x, y, row_count)
+                .and_then(|row| model.launcher.index_for_window_row(row, window_size));
+
             redraw_if(model.launcher.hover_index(hovered))
         }
         Msg::ClearHover => redraw_if(model.launcher.hover_index(None)),
         Msg::PointerPressedAt { x, y } => {
-            let Some(index) = model.layout().row_at(x, y, model.launcher.visible_count()) else {
-                return vec![];
-            };
-            model.launcher.select_index(index);
-            launch_selected(model)
+            let layout = model.layout();
+
+            if layout.search.contains(x, y) {
+                let changed = !model.search_focused;
+                model.search_focused = true;
+                return redraw_if(changed);
+            }
+
+            let window_size = layout.visible_rows();
+            let row_count = model.launcher.window_count(window_size);
+
+            if let Some(index) = layout
+                .row_at(x, y, row_count)
+                .and_then(|row| model.launcher.index_for_window_row(row, window_size))
+            {
+                model.search_focused = false;
+                model.launcher.select_index(index);
+                return launch_selected(model);
+            }
+
+            let changed = model.search_focused;
+            model.search_focused = false;
+            redraw_if(changed)
         }
         Msg::LaunchSelected => launch_selected(model),
         Msg::Quit => vec![Cmd::Exit],
         Msg::Configured { width, height } => {
             let size_changed = model.logical_width != width || model.logical_height != height;
             let first_configure = !model.configured;
+
             model.logical_width = width;
             model.logical_height = height;
             model.configured = true;
+            model.launcher.ensure_selected_visible(model.visible_rows());
+
             if size_changed || first_configure {
                 vec![Cmd::Redraw]
             } else {
@@ -91,11 +143,15 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             if new_scale < 1 || new_scale == model.scale {
                 return vec![];
             }
+
             model.scale = new_scale;
+
             let mut cmds = vec![Cmd::SetBufferScale(new_scale)];
+
             if model.configured {
                 cmds.push(Cmd::Redraw);
             }
+
             cmds
         }
         Msg::LaunchFailed(error) => {
