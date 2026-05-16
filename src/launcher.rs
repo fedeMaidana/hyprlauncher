@@ -162,9 +162,7 @@ impl Launcher {
     }
 
     pub fn selected_entry(&self) -> Option<DesktopEntry> {
-        self.visible_entries()
-            .get(self.selected())
-            .map(|entry| DesktopEntry::clone(*entry))
+        self.visible_entries().get(self.selected()).map(|entry| DesktopEntry::clone(*entry))
     }
 
     fn ranked_entries(&self) -> Vec<(i32, &DesktopEntry)> {
@@ -174,11 +172,7 @@ impl Launcher {
             .filter_map(|entry| entry.rank(&self.query).map(|rank| (rank, entry)))
             .collect();
 
-        ranked.sort_by(|(rank_a, a), (rank_b, b)| {
-            rank_a
-                .cmp(rank_b)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        ranked.sort_by(|(rank_a, a), (rank_b, b)| rank_a.cmp(rank_b).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
 
         let limit = self.max_results.min(ranked.len());
         ranked.truncate(limit);

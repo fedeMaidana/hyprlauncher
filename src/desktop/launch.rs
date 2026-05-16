@@ -6,8 +6,8 @@ use crate::desktop::DesktopEntry;
 
 pub fn launch_entry(entry: &DesktopEntry) -> Result<()> {
     let command_line = strip_desktop_field_codes(&entry.exec);
-    let parts = shlex::split(&command_line)
-        .with_context(|| format!("no pude interpretar Exec de {}: {}", entry.source.display(), entry.exec))?;
+    let parts =
+        shlex::split(&command_line).with_context(|| format!("no pude interpretar Exec de {}: {}", entry.source.display(), entry.exec))?;
 
     let Some((program, args)) = parts.split_first() else {
         bail!("Exec vacío en {}", entry.source.display());

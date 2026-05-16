@@ -1,7 +1,5 @@
 use image::RgbaImage;
-use tiny_skia::{
-    FillRule, FilterQuality, LineCap, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Stroke, Transform,
-};
+use tiny_skia::{FillRule, FilterQuality, LineCap, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Stroke, Transform};
 
 use crate::{
     geometry::{Corners, Rect},
@@ -42,12 +40,8 @@ pub fn draw_search_icon(pixmap: &mut Pixmap, rect: Rect, color: Color, stroke_wi
     let cy = rect.y as f32 + size * 0.42;
     let radius = size * 0.22;
 
-    let circle = Rect::new(
-        (cx - radius).round() as i32,
-        (cy - radius).round() as i32,
-        (radius * 2.0).round() as i32,
-        (radius * 2.0).round() as i32,
-    );
+    let circle =
+        Rect::new((cx - radius).round() as i32, (cy - radius).round() as i32, (radius * 2.0).round() as i32, (radius * 2.0).round() as i32);
 
     let Some(circle_path) = round_rect_path(circle, circle.w / 2, Corners::ALL) else {
         return;

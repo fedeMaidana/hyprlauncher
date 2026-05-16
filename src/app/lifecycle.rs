@@ -21,13 +21,7 @@ use wayland_client::{
 use crate::{app::AppState, model::Msg};
 
 impl CompositorHandler for AppState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        surface: &wl_surface::WlSurface,
-        new_factor: i32,
-    ) {
+    fn scale_factor_changed(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, new_factor: i32) {
         if self.layer.wl_surface() == surface {
             self.dispatch(qh, Msg::ScaleChanged(new_factor));
         }
@@ -42,9 +36,9 @@ impl CompositorHandler for AppState {
     ) {
     }
 
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+    fn frame(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
         self.redraw_scheduled = false;
-        self.render_now();
+        self.render_now(qh);
     }
 
     fn surface_enter(

@@ -18,7 +18,7 @@ impl AppState {
         self.layer.commit();
     }
 
-    pub(super) fn render_now(&mut self) {
+    pub(super) fn render_now(&mut self, qh: &QueueHandle<AppState>) {
         let logical_w = self.model.logical_width.max(1);
         let logical_h = self.model.logical_height.max(1);
 
@@ -47,7 +47,7 @@ impl AppState {
             model: &self.model,
             theme: &self.theme,
             wallpaper: self.wallpaper_preview.as_ref(),
-            icons: &self.icon_cache,
+            icons: &mut self.icon_cache,
             font: &self.font,
         });
 
@@ -60,5 +60,9 @@ impl AppState {
 
         self.layer.commit();
         self.has_rendered = true;
+
+        if self.icon_cache.needs_redraw() {
+            self.request_redraw(qh);
+        }
     }
 }

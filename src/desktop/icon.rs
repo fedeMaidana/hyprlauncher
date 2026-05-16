@@ -2,6 +2,11 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
 };
 
 use image::{RgbaImage, imageops::FilterType};
@@ -11,38 +16,147 @@ use super::DesktopEntry;
 const ICON_RENDER_SIZE: u32 = 256;
 const MAX_SCAN_DEPTH: usize = 8;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct IconCache {
-    icons: HashMap<String, RgbaImage>,
+    icons: Arc<Mutex<HashMap<String, Arc<RgbaImage>>>>,
+    requested: HashSet<String>,
+    tx: mpsc::Sender<String>,
+    pending: Arc<AtomicUsize>,
+    changed: Arc<AtomicBool>,
 }
 
 impl IconCache {
-    pub fn load_for_entries(entries: &[DesktopEntry]) -> Self {
-        let icon_names = unique_icon_names(entries);
-        let index = IconIndex::build();
-        let mut icons = HashMap::new();
+    pub fn new() -> Self {
+        let icons = Arc::new(Mutex::new(HashMap::new()));
+        let pending = Arc::new(AtomicUsize::new(0));
+        let changed = Arc::new(AtomicBool::new(false));
+        let requested = HashSet::new();
+        let (tx, rx) = mpsc::channel();
 
-        for name in icon_names {
-            let Some(path) = index.lookup(&name) else {
-                continue;
-            };
+        let worker_icons = Arc::clone(&icons);
+        let worker_pending = Arc::clone(&pending);
+        let worker_changed = Arc::clone(&changed);
 
-            match load_icon(&path) {
-                Some(image) => {
-                    icons.insert(name, image);
-                }
-                None => {
-                    log::debug!("no se pudo cargar icono desde {}", path.display());
-                }
-            }
+        if let Err(err) = std::thread::Builder::new()
+            .name("hyprlauncher-icon-worker".to_owned())
+            .spawn(move || icon_worker(rx, worker_icons, worker_pending, worker_changed))
+        {
+            log::warn!("no se pudo iniciar icon worker: {err:?}");
         }
 
-        Self { icons }
+        Self {
+            icons,
+            requested,
+            tx,
+            pending,
+            changed,
+        }
     }
 
-    pub fn image_for(&self, entry: &DesktopEntry) -> Option<&RgbaImage> {
-        entry.icon.as_ref().and_then(|name| self.icons.get(name))
+    pub fn preload_entries<'a, I>(&mut self, entries: I)
+    where
+        I: IntoIterator<Item = &'a DesktopEntry>,
+    {
+        for entry in entries {
+            self.request_entry(entry);
+        }
     }
+
+    pub fn image_for(&mut self, entry: &DesktopEntry) -> Option<Arc<RgbaImage>> {
+        let name = entry.icon.as_deref()?.trim();
+
+        if name.is_empty() {
+            return None;
+        }
+
+        if let Some(image) = self.cached_image(name) {
+            return Some(image);
+        }
+
+        self.request_icon(name);
+
+        None
+    }
+
+    pub fn needs_redraw(&self) -> bool {
+        self.pending.load(Ordering::Relaxed) > 0 || self.changed.swap(false, Ordering::Relaxed)
+    }
+
+    fn request_entry(&mut self, entry: &DesktopEntry) {
+        let Some(name) = entry.icon.as_deref() else {
+            return;
+        };
+
+        let name = name.trim();
+
+        if !name.is_empty() {
+            self.request_icon(name);
+        }
+    }
+
+    fn request_icon(&mut self, name: &str) {
+        if self.cached_image(name).is_some() {
+            return;
+        }
+
+        if !self.requested.insert(name.to_owned()) {
+            return;
+        }
+
+        self.pending.fetch_add(1, Ordering::Relaxed);
+
+        if self.tx.send(name.to_owned()).is_err() {
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    fn cached_image(&self, name: &str) -> Option<Arc<RgbaImage>> {
+        self.icons.lock().ok()?.get(name).cloned()
+    }
+}
+
+impl Default for IconCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn warm_icon_cache(entries: &[DesktopEntry]) {
+    let index = IconIndex::build();
+    let mut warmed = 0usize;
+    let mut skipped = 0usize;
+    let mut missing = 0usize;
+    let mut seen = HashSet::new();
+
+    for entry in entries {
+        let Some(name) = entry.icon.as_deref().map(str::trim) else {
+            continue;
+        };
+
+        if name.is_empty() || !seen.insert(name.to_owned()) {
+            continue;
+        }
+
+        if load_cached_icon(name).is_some() {
+            skipped += 1;
+            continue;
+        }
+
+        let Some(path) = index.lookup(name) else {
+            missing += 1;
+            continue;
+        };
+
+        let Some(image) = load_icon(&path) else {
+            missing += 1;
+            continue;
+        };
+
+        store_cached_icon(name, &image);
+        warmed += 1;
+    }
+
+    log::info!("icon cache warm finished: warmed={warmed}, cached={skipped}, missing={missing}");
 }
 
 #[derive(Debug, Default)]
@@ -129,16 +243,34 @@ enum IconFormat {
     Svg,
 }
 
-fn unique_icon_names(entries: &[DesktopEntry]) -> Vec<String> {
-    let mut seen = HashSet::new();
+fn icon_worker(
+    rx: mpsc::Receiver<String>,
+    icons: Arc<Mutex<HashMap<String, Arc<RgbaImage>>>>,
+    pending: Arc<AtomicUsize>,
+    changed: Arc<AtomicBool>,
+) {
+    let mut index: Option<IconIndex> = None;
 
-    entries
-        .iter()
-        .filter_map(|entry| entry.icon.as_deref())
-        .filter(|name| !name.trim().is_empty())
-        .filter(|name| seen.insert((*name).to_owned()))
-        .map(str::to_owned)
-        .collect()
+    while let Ok(name) = rx.recv() {
+        let image = load_cached_icon(&name).or_else(|| {
+            let index = index.get_or_insert_with(IconIndex::build);
+            let path = index.lookup(&name)?;
+            let image = load_icon(&path)?;
+
+            store_cached_icon(&name, &image);
+
+            Some(image)
+        });
+
+        if let Some(image) = image
+            && let Ok(mut icons) = icons.lock()
+        {
+            icons.insert(name, Arc::new(image));
+            changed.store(true, Ordering::Relaxed);
+        }
+
+        pending.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 fn icon_roots() -> Vec<PathBuf> {
@@ -257,4 +389,57 @@ fn resize_icon(image: RgbaImage) -> RgbaImage {
     }
 
     image::imageops::resize(&image, ICON_RENDER_SIZE, ICON_RENDER_SIZE, FilterType::Lanczos3)
+}
+
+fn load_cached_icon(name: &str) -> Option<RgbaImage> {
+    let path = cached_icon_path(name);
+    image::open(path).ok().map(|image| image.to_rgba8())
+}
+
+fn store_cached_icon(name: &str, image: &RgbaImage) {
+    let path = cached_icon_path(name);
+
+    if let Some(parent) = path.parent()
+        && let Err(err) = fs::create_dir_all(parent)
+    {
+        log::debug!("no se pudo crear cache de iconos: {err:#}");
+        return;
+    }
+
+    if let Err(err) = image.save(&path) {
+        log::debug!("no se pudo guardar icono cacheado {}: {err:#}", path.display());
+    }
+}
+
+fn cached_icon_path(name: &str) -> PathBuf {
+    cache_dir()
+        .join("hyprlauncher")
+        .join("icons")
+        .join(format!("{}.png", sanitize_icon_name(name)))
+}
+
+fn cache_dir() -> PathBuf {
+    if let Some(cache_home) = env::var_os("XDG_CACHE_HOME") {
+        return PathBuf::from(cache_home);
+    }
+
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cache")
+}
+
+fn sanitize_icon_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if sanitized.is_empty() { "unknown".to_owned() } else { sanitized }
 }

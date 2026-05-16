@@ -17,7 +17,7 @@ pub struct RenderRequest<'a> {
     pub model: &'a Model,
     pub theme: &'a Theme,
     pub wallpaper: Option<&'a RgbaImage>,
-    pub icons: &'a IconCache,
+    pub icons: &'a mut IconCache,
     pub font: &'a Font,
 }
 

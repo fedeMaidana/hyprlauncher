@@ -63,9 +63,17 @@ impl AppState {
 
         let theme = Theme::load(&config);
         let wallpaper_preview = wallpaper_preview::load(theme.wallpaper.as_deref());
-        let icon_cache = IconCache::load_for_entries(&entries);
+
         let launcher = Launcher::new(entries, config.max_results);
         let model = Model::new(launcher, config.width, config.height);
+
+        let mut icon_cache = IconCache::new();
+        let visible_rows = model.layout().visible_rows();
+
+        icon_cache.preload_entries(model.launcher.window_entries(visible_rows).into_iter().map(|(_, entry)| entry));
+
+        icon_cache.preload_entries(model.launcher.visible_entries());
+
         let font = load_ui_font()?;
 
         let conn = Connection::connect_to_env().context("no se pudo conectar a Wayland")?;
@@ -74,8 +82,7 @@ impl AppState {
 
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor no disponible")?;
 
-        let layer_shell =
-            LayerShell::bind(&globals, &qh).context("zwlr_layer_shell_v1 no disponible; Hyprland debería soportarlo")?;
+        let layer_shell = LayerShell::bind(&globals, &qh).context("zwlr_layer_shell_v1 no disponible; Hyprland debería soportarlo")?;
 
         let shm = Shm::bind(&globals, &qh).context("wl_shm no disponible")?;
 
@@ -88,8 +95,7 @@ impl AppState {
         layer.set_size(0, 0);
         layer.commit();
 
-        let pool =
-            SlotPool::new((config.width * config.height * 4) as usize, &shm).context("no se pudo crear wl_shm SlotPool")?;
+        let pool = SlotPool::new((config.width * config.height * 4) as usize, &shm).context("no se pudo crear wl_shm SlotPool")?;
 
         let mut app = Self {
             registry_state: RegistryState::new(&globals),
@@ -114,9 +120,7 @@ impl AppState {
         };
 
         while !app.model.configured {
-            event_queue
-                .blocking_dispatch(&mut app)
-                .context("dispatch esperando configure")?;
+            event_queue.blocking_dispatch(&mut app).context("dispatch esperando configure")?;
         }
 
         while !app.should_close {
@@ -144,7 +148,7 @@ impl AppState {
                 if self.has_rendered {
                     self.request_redraw(qh);
                 } else {
-                    self.render_now();
+                    self.render_now(qh);
                 }
 
                 None

@@ -42,12 +42,7 @@ impl DesktopEntry {
             return Some(40);
         }
 
-        if self
-            .comment
-            .as_deref()
-            .map(|v| v.to_lowercase().contains(&query))
-            .unwrap_or(false)
-        {
+        if self.comment.as_deref().map(|v| v.to_lowercase().contains(&query)).unwrap_or(false) {
             return Some(60);
         }
 

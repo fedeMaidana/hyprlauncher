@@ -31,9 +31,8 @@ impl<'a> Painter<'a> {
         })
     }
 
-    pub fn draw(&mut self, model: &Model, theme: &Theme, wallpaper: Option<&RgbaImage>, icons: &IconCache) {
-        let layout =
-            LauncherLayout::new(model.logical_width, model.logical_height, model.preferred_width, model.preferred_height);
+    pub fn draw(&mut self, model: &Model, theme: &Theme, wallpaper: Option<&RgbaImage>, icons: &mut IconCache) {
+        let layout = LauncherLayout::new(model.logical_width, model.logical_height, model.preferred_width, model.preferred_height);
 
         self.fill_fullscreen_scrim(theme.background.with_alpha(88));
         self.draw_panel(&layout, theme);
@@ -69,7 +68,7 @@ impl<'a> Painter<'a> {
         }
     }
 
-    fn draw_entries(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, icons: &IconCache) {
+    fn draw_entries(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, icons: &mut IconCache) {
         let visible = model.launcher.window_entries(layout.visible_rows());
 
         if visible.is_empty() {
@@ -95,7 +94,8 @@ impl<'a> Painter<'a> {
                 self.fill_round(row, style::surface::ITEM_RADIUS, row_color);
             }
 
-            self.draw_entry(row, entry, selected, theme, icons.image_for(entry));
+            let app_icon = icons.image_for(entry);
+            self.draw_entry(row, entry, selected, theme, app_icon.as_deref());
         }
     }
 
@@ -177,8 +177,7 @@ impl<'a> Painter<'a> {
 
         let resized = image::imageops::resize(image, out_w, out_h, FilterType::Lanczos3);
 
-        let draw_rect =
-            Rect::new(rect.x + (rect.w - out_w as i32) / 2, rect.y + (rect.h - out_h as i32) / 2, out_w as i32, out_h as i32);
+        let draw_rect = Rect::new(rect.x + (rect.w - out_w as i32) / 2, rect.y + (rect.h - out_h as i32) / 2, out_w as i32, out_h as i32);
 
         draw_image_contain(&mut self.pixmap, draw_rect, radius, &resized);
     }

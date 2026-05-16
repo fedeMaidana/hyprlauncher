@@ -2,12 +2,21 @@ use std::env;
 
 use crate::config::Config;
 
-pub fn config_from_args() -> Config {
+#[derive(Debug, Clone)]
+pub enum CliAction {
+    Run(Config),
+    WarmIconCache,
+}
+
+pub fn action_from_args() -> CliAction {
     let mut config = Config::load();
     let mut args = env::args().skip(1);
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--warm-icon-cache" => {
+                return CliAction::WarmIconCache;
+            }
             "--max-results" => {
                 if let Some(value) = args.next().and_then(|v| v.parse::<usize>().ok()) {
                     config.max_results = value.max(1);
@@ -32,5 +41,5 @@ pub fn config_from_args() -> Config {
         }
     }
 
-    config
+    CliAction::Run(config)
 }
