@@ -12,6 +12,7 @@ mod model;
 mod render;
 mod style;
 mod theme;
+mod usage;
 mod wallpaper_preview;
 
 use cli::CliAction;

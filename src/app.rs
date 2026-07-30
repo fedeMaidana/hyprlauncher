@@ -29,6 +29,7 @@ use crate::{
     launcher::Launcher,
     model::{Cmd, Model, Msg, update},
     theme::Theme,
+    usage::UsageStats,
     wallpaper_preview,
 };
 
@@ -72,7 +73,7 @@ impl AppState {
         let theme = Theme::load(&config);
         let wallpaper_preview = wallpaper_preview::load(theme.wallpaper.as_deref());
 
-        let launcher = Launcher::new(entries, config.max_results);
+        let launcher = Launcher::new(entries, config.max_results, UsageStats::load());
         let model = Model::new(launcher, config.width, config.height);
 
         let mut icon_cache = IconCache::new();
@@ -185,7 +186,13 @@ impl AppState {
                 None
             }
             Cmd::Launch(entry) => match launch_entry(&entry) {
-                Ok(()) => None,
+                Ok(()) => {
+                    if let Err(err) = self.model.launcher.record_launch(&entry.id) {
+                        log::warn!("no se pudo guardar el uso: {err:#}");
+                    }
+
+                    None
+                }
                 Err(err) => Some(Msg::LaunchFailed(format!("{err:#}"))),
             },
             Cmd::SetBufferScale(scale) => {

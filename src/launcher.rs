@@ -1,4 +1,9 @@
 use crate::desktop::DesktopEntry;
+use crate::usage::UsageStats;
+
+/// Boost cap below the rank tier gap (10): frequent use reorders results
+/// within a tier but never lets a weaker match beat an exact/prefix one.
+const USAGE_BOOST_CAP: u32 = 9;
 
 #[derive(Debug, Clone)]
 pub struct Launcher {
@@ -8,10 +13,11 @@ pub struct Launcher {
     hovered: Option<usize>,
     max_results: usize,
     scroll_offset: usize,
+    usage: UsageStats,
 }
 
 impl Launcher {
-    pub fn new(entries: Vec<DesktopEntry>, max_results: usize) -> Self {
+    pub fn new(entries: Vec<DesktopEntry>, max_results: usize, usage: UsageStats) -> Self {
         Self {
             entries,
             query: String::new(),
@@ -19,7 +25,14 @@ impl Launcher {
             hovered: None,
             max_results: max_results.max(1),
             scroll_offset: 0,
+            usage,
         }
+    }
+
+    /// Bumps and persists the launch counter for frecency ranking.
+    pub fn record_launch(&mut self, id: &str) -> anyhow::Result<()> {
+        self.usage.bump(id);
+        self.usage.save()
     }
 
     pub fn query(&self) -> &str {
@@ -169,7 +182,7 @@ impl Launcher {
         let mut ranked: Vec<_> = self
             .entries
             .iter()
-            .filter_map(|entry| entry.rank(&self.query).map(|rank| (rank, entry)))
+            .filter_map(|entry| entry.rank(&self.query).map(|rank| (rank - self.usage_boost(entry), entry)))
             .collect();
 
         ranked.sort_by(|(rank_a, a), (rank_b, b)| rank_a.cmp(rank_b).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -180,9 +193,37 @@ impl Launcher {
         ranked
     }
 
+    fn usage_boost(&self, entry: &DesktopEntry) -> i32 {
+        self.usage.count(&entry.id).min(USAGE_BOOST_CAP) as i32
+    }
+
     fn reset_selection(&mut self) {
         self.selected = 0;
         self.hovered = None;
         self.scroll_offset = 0;
     }
+}
+
+/// Char range of `query` inside `name` (case-insensitive), for highlighting.
+pub fn name_match_range(name: &str, query: &str) -> Option<(usize, usize)> {
+    let query = query.trim();
+
+    if query.is_empty() {
+        return None;
+    }
+
+    let name_chars: Vec<char> = name.chars().map(lower_char).collect();
+    let query_chars: Vec<char> = query.chars().map(lower_char).collect();
+
+    if query_chars.len() > name_chars.len() {
+        return None;
+    }
+
+    (0..=name_chars.len() - query_chars.len())
+        .find(|&start| name_chars[start..start + query_chars.len()] == query_chars[..])
+        .map(|start| (start, start + query_chars.len()))
+}
+
+fn lower_char(ch: char) -> char {
+    ch.to_lowercase().next().unwrap_or(ch)
 }

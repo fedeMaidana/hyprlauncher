@@ -5,6 +5,7 @@ use tiny_skia::Pixmap;
 use crate::{
     desktop::{DesktopEntry, IconCache},
     geometry::Rect,
+    launcher::name_match_range,
     layout::LauncherLayout,
     model::Model,
     style,
@@ -20,6 +21,24 @@ use super::{
 
 const PREVIEW_SLANT: i32 = 46;
 const PREVIEW_DIVIDER_BAND_WIDTH: i32 = 28;
+const EMPTY_STATE_QUERY_MAX_CHARS: usize = 24;
+
+fn empty_state_message(query: &str) -> String {
+    let query = query.trim();
+
+    if query.is_empty() {
+        return "Sin resultados".to_owned();
+    }
+
+    let shown: String = if query.chars().count() > EMPTY_STATE_QUERY_MAX_CHARS {
+        let truncated: String = query.chars().take(EMPTY_STATE_QUERY_MAX_CHARS).collect();
+        format!("{truncated}…")
+    } else {
+        query.to_owned()
+    };
+
+    format!("Sin resultados para «{shown}»")
+}
 
 pub struct Painter<'a> {
     pixmap: Pixmap,
@@ -45,7 +64,20 @@ impl<'a> Painter<'a> {
         self.draw_diagonal_divider(&layout, theme);
         self.draw_search(&layout, model, theme);
         self.draw_entries(&layout, model, theme, icons);
+        self.draw_hints(&layout, model, theme);
         self.draw_error(&layout, model, theme);
+    }
+
+    /// Muted key guide inside the panel's bottom padding.
+    fn draw_hints(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme) {
+        // The error banner uses this strip; it wins.
+        if model.error.is_some() {
+            return;
+        }
+
+        let rect = Rect::new(layout.panel.x, layout.panel.y + layout.panel.h - 17, layout.panel.w, 14);
+
+        self.text_center(rect, "↑↓ navegar · Enter abrir · Esc salir", style::font_size::HINT, theme.muted.with_alpha(150));
     }
 
     fn fill_slanted_preview(&mut self, rect: Rect, radius: i32, slant: i32, color: Color) {
@@ -108,7 +140,7 @@ impl<'a> Painter<'a> {
 
         if visible.is_empty() {
             let rect = Rect::new(layout.list.x, layout.list.y + 28, layout.list.w, 40);
-            self.text_center(rect, "Sin resultados", style::font_size::QUERY, theme.muted);
+            self.text_center(rect, &empty_state_message(model.launcher.query()), style::font_size::QUERY, theme.muted);
             return;
         }
 
@@ -130,11 +162,30 @@ impl<'a> Painter<'a> {
             }
 
             let app_icon = icons.image_for(entry);
-            self.draw_entry(row, entry, selected, theme, app_icon.as_deref());
+            self.draw_entry(row, entry, selected, model.launcher.query(), theme, app_icon.as_deref());
         }
+
+        self.draw_overflow_indicator(layout, model, theme, &visible);
     }
 
-    fn draw_entry(&mut self, row: Rect, entry: &DesktopEntry, selected: bool, theme: &Theme, app_icon: Option<&RgbaImage>) {
+    /// Muted "n más…" in the panel's bottom strip when results overflow.
+    fn draw_overflow_indicator(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, visible: &[(usize, &DesktopEntry)]) {
+        let total = model.launcher.result_count();
+        let last_shown = visible.last().map(|(index, _)| index + 1).unwrap_or(0);
+
+        if last_shown >= total {
+            return;
+        }
+
+        let text = format!("{} más…", total - last_shown);
+        let width = self.measure_text_width(&text, style::font_size::HINT);
+        let x = layout.panel.x + layout.panel.w - 22 - width;
+        let rect = Rect::new(x, layout.panel.y + layout.panel.h - 17, width + 4, 14);
+
+        self.text_left(rect, &text, style::font_size::HINT, theme.muted.with_alpha(160));
+    }
+
+    fn draw_entry(&mut self, row: Rect, entry: &DesktopEntry, selected: bool, query: &str, theme: &Theme, app_icon: Option<&RgbaImage>) {
         let icon = Rect::new(row.x + 16, row.y + (row.h - 26) / 2, 26, 26);
 
         if let Some(app_icon) = app_icon {
@@ -166,8 +217,44 @@ impl<'a> Painter<'a> {
             theme.muted
         };
 
-        self.text_left(title, &entry.name, style::font_size::TITLE, fg);
+        // Matched letters light up in accent so the ranking explains itself.
+        let highlight = if selected { fg } else { theme.accent };
+
+        match name_match_range(&entry.name, query) {
+            Some((start, end)) => self.text_left_highlighted(title, &entry.name, style::font_size::TITLE, fg, highlight, start, end),
+            None => self.text_left(title, &entry.name, style::font_size::TITLE, fg),
+        }
+
         self.text_left(subtitle, entry.subtitle(), style::font_size::HINT, muted);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn text_left_highlighted(&mut self, rect: Rect, text: &str, size: f32, base: Color, accent: Color, start: usize, end: usize) {
+        let chars: Vec<char> = text.chars().collect();
+        let start = start.min(chars.len());
+        let end = end.clamp(start, chars.len());
+
+        let segments = [
+            (chars[..start].iter().collect::<String>(), base),
+            (chars[start..end].iter().collect::<String>(), accent),
+            (chars[end..].iter().collect::<String>(), base),
+        ];
+
+        let mut x = rect.x;
+
+        for (segment, color) in segments {
+            if segment.is_empty() {
+                continue;
+            }
+
+            if x >= rect.x + rect.w {
+                break;
+            }
+
+            let width = (rect.x + rect.w - x).max(0);
+            self.text_left(Rect::new(x, rect.y, width, rect.h), &segment, size, color);
+            x += self.measure_text_width(&segment, size);
+        }
     }
 
     fn draw_error(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme) {
