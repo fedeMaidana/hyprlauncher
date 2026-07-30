@@ -5,7 +5,11 @@ use smithay_client_toolkit::{
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{Capability, SeatHandler, SeatState, pointer::ThemeSpec},
+    seat::{
+        Capability, SeatHandler, SeatState,
+        keyboard::{KeyEvent, Keysym},
+        pointer::ThemeSpec,
+    },
     shell::{
         WaylandSurface,
         wlr_layer::{LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
@@ -15,8 +19,10 @@ use smithay_client_toolkit::{
 
 use wayland_client::{
     Connection, QueueHandle,
-    protocol::{wl_output, wl_seat, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_seat, wl_surface},
 };
+
+use super::input::{KEY_REPEAT_STEPS, key_event_to_msg};
 
 use crate::{app::AppState, model::Msg};
 
@@ -106,9 +112,32 @@ impl SeatHandler for AppState {
 
     fn new_capability(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
         if capability == Capability::Keyboard && self.keyboard.is_none() {
-            match self.seat_state.get_keyboard(qh, &seat, None) {
+            let repeat_qh = qh.clone();
+
+            let callback = Box::new(move |app: &mut AppState, _keyboard: &wl_keyboard::WlKeyboard, event: KeyEvent| match event.keysym {
+                Keysym::Up => {
+                    for _ in 0..KEY_REPEAT_STEPS {
+                        app.dispatch(&repeat_qh, Msg::SelectPrev);
+                    }
+                }
+                Keysym::Down => {
+                    for _ in 0..KEY_REPEAT_STEPS {
+                        app.dispatch(&repeat_qh, Msg::SelectNext);
+                    }
+                }
+                _ => {
+                    if let Some(msg) = key_event_to_msg(&event) {
+                        app.dispatch(&repeat_qh, msg);
+                    }
+                }
+            });
+
+            match self
+                .seat_state
+                .get_keyboard_with_repeat(qh, &seat, None, self.loop_handle.clone(), callback)
+            {
                 Ok(keyboard) => self.keyboard = Some(keyboard),
-                Err(err) => log::warn!("no se pudo crear keyboard: {err:?}"),
+                Err(err) => log::warn!("no se pudo crear keyboard con repeat: {err:?}"),
             }
         }
 

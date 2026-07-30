@@ -12,7 +12,7 @@ use wayland_client::{
 
 use crate::{app::AppState, model::Msg};
 
-const KEY_REPEAT_STEPS: usize = 2;
+pub(super) const KEY_REPEAT_STEPS: usize = 1;
 const MAX_WHEEL_STEPS_PER_EVENT: usize = 6;
 const PIXELS_PER_WHEEL_STEP: f64 = 48.0;
 

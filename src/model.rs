@@ -14,6 +14,7 @@ pub enum Msg {
     Configured { width: u32, height: u32 },
     ScaleChanged(i32),
     LaunchFailed(String),
+    CaretBlink,
 }
 
 #[derive(Debug)]
@@ -34,6 +35,7 @@ pub struct Model {
     pub preferred_height: u32,
     pub configured: bool,
     pub search_focused: bool,
+    pub caret_visible: bool,
     pub error: Option<String>,
 }
 
@@ -48,6 +50,7 @@ impl Model {
             preferred_height,
             configured: false,
             search_focused: false,
+            caret_visible: true,
             error: None,
         }
     }
@@ -65,12 +68,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
         Msg::Type(ch) => {
             model.search_focused = true;
+            model.caret_visible = true;
             let changed = model.launcher.push_char(ch);
             let scrolled = model.launcher.ensure_selected_visible(model.visible_rows());
             redraw_if(changed || scrolled)
         }
         Msg::Backspace => {
             model.search_focused = true;
+            model.caret_visible = true;
             let changed = model.launcher.backspace();
             let scrolled = model.launcher.ensure_selected_visible(model.visible_rows());
             redraw_if(changed || scrolled)
@@ -156,6 +161,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::LaunchFailed(error) => {
             model.error = Some(error);
+            vec![Cmd::Redraw]
+        }
+        Msg::CaretBlink => {
+            if !model.search_focused {
+                model.caret_visible = true;
+                return vec![];
+            }
+            model.caret_visible = !model.caret_visible;
             vec![Cmd::Redraw]
         }
     }

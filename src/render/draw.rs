@@ -20,12 +20,38 @@ pub fn fill_round_rect(pixmap: &mut Pixmap, rect: Rect, radius: i32, color: Colo
     pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
-pub fn draw_image_cover(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &RgbaImage) {
-    draw_image(pixmap, rect, radius, image, ImageFit::Cover);
+pub fn fill_slanted_band(pixmap: &mut Pixmap, rect: Rect, slant: i32, color: Color) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+
+    let x = rect.x as f32;
+    let y = rect.y as f32;
+    let w = rect.w as f32;
+    let h = rect.h as f32;
+    let s = slant as f32;
+
+    let mut path = PathBuilder::new();
+
+    path.move_to(x + s, y);
+    path.line_to(x + s + w, y);
+    path.line_to(x + w, y + h);
+    path.line_to(x, y + h);
+    path.close();
+
+    let Some(path) = path.finish() else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+
+    pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
 }
 
 pub fn draw_image_contain(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &RgbaImage) {
-    draw_image(pixmap, rect, radius, image, ImageFit::Contain);
+    draw_image_with_corners(pixmap, rect, radius, Corners::ALL, image, ImageFit::Contain);
 }
 
 pub fn draw_search_icon(pixmap: &mut Pixmap, rect: Rect, color: Color, stroke_width: i32) {
@@ -69,13 +95,69 @@ pub fn draw_search_icon(pixmap: &mut Pixmap, rect: Rect, color: Color, stroke_wi
     }
 }
 
+pub fn fill_slanted_preview_rect(pixmap: &mut Pixmap, rect: Rect, radius: i32, slant: i32, color: Color) {
+    let Some(path) = slanted_preview_path(rect, radius, slant) else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+
+    pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+}
+
+pub fn draw_image_cover_slanted_right(pixmap: &mut Pixmap, rect: Rect, radius: i32, slant: i32, image: &RgbaImage) {
+    let Some(clip) = slanted_preview_path(rect, radius, slant) else {
+        return;
+    };
+
+    draw_image_with_clip(pixmap, rect, image, ImageFit::Cover, &clip);
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ImageFit {
     Cover,
     Contain,
 }
 
-fn draw_image(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &RgbaImage, fit: ImageFit) {
+fn slanted_preview_path(rect: Rect, radius: i32, slant: i32) -> Option<Path> {
+    if rect.w <= 0 || rect.h <= 0 {
+        return None;
+    }
+
+    let r_max = (rect.w.min(rect.h)) / 2;
+    let r = radius.clamp(0, r_max) as f32;
+    let s = slant.clamp(0, rect.w) as f32;
+
+    let x = rect.x as f32;
+    let y = rect.y as f32;
+    let w = rect.w as f32;
+    let h = rect.h as f32;
+    let k = CIRCLE_KAPPA;
+
+    let mut pb = PathBuilder::new();
+
+    pb.move_to(x + r, y);
+    pb.line_to(x + w, y);
+    pb.line_to(x + w - s, y + h);
+    pb.line_to(x + r, y + h);
+
+    if r > 0.0 {
+        pb.cubic_to(x + r - r * k, y + h, x, y + h - r + r * k, x, y + h - r);
+    }
+
+    pb.line_to(x, y + r);
+
+    if r > 0.0 {
+        pb.cubic_to(x, y + r - r * k, x + r - r * k, y, x + r, y);
+    }
+
+    pb.close();
+    pb.finish()
+}
+
+fn draw_image_with_clip(pixmap: &mut Pixmap, rect: Rect, image: &RgbaImage, fit: ImageFit, clip: &Path) {
     if rect.w <= 0 || rect.h <= 0 || image.width() == 0 || image.height() == 0 {
         return;
     }
@@ -104,7 +186,46 @@ fn draw_image(pixmap: &mut Pixmap, rect: Rect, radius: i32, image: &RgbaImage, f
         return;
     };
 
-    let Some(clip) = round_rect_path(rect, radius, Corners::ALL) else {
+    mask.fill_path(clip, FillRule::Winding, true, Transform::identity());
+
+    let paint = PixmapPaint {
+        quality: FilterQuality::Bicubic,
+        ..PixmapPaint::default()
+    };
+
+    pixmap.draw_pixmap(0, 0, image_ref, &paint, transform, Some(&mask));
+}
+
+fn draw_image_with_corners(pixmap: &mut Pixmap, rect: Rect, radius: i32, corners: Corners, image: &RgbaImage, fit: ImageFit) {
+    if rect.w <= 0 || rect.h <= 0 || image.width() == 0 || image.height() == 0 {
+        return;
+    }
+
+    let Some(image_ref) = PixmapRef::from_bytes(image.as_raw(), image.width(), image.height()) else {
+        return;
+    };
+
+    let scale_x = rect.w as f32 / image.width() as f32;
+    let scale_y = rect.h as f32 / image.height() as f32;
+
+    let scale = match fit {
+        ImageFit::Cover => scale_x.max(scale_y),
+        ImageFit::Contain => scale_x.min(scale_y),
+    };
+
+    let scaled_w = image.width() as f32 * scale;
+    let scaled_h = image.height() as f32 * scale;
+
+    let dx = rect.x as f32 + (rect.w as f32 - scaled_w) / 2.0;
+    let dy = rect.y as f32 + (rect.h as f32 - scaled_h) / 2.0;
+
+    let transform = Transform::from_scale(scale, scale).post_translate(dx, dy);
+
+    let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else {
+        return;
+    };
+
+    let Some(clip) = round_rect_path(rect, radius, corners) else {
         return;
     };
 

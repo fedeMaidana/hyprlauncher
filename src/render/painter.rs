@@ -12,9 +12,14 @@ use crate::{
 };
 
 use super::{
-    draw::{draw_image_contain, draw_image_cover, draw_search_icon, fill_round_rect},
+    draw::{
+        draw_image_contain, draw_image_cover_slanted_right, draw_search_icon, fill_round_rect, fill_slanted_band, fill_slanted_preview_rect,
+    },
     text::{TextSpec, TextSurface, draw_text_center, draw_text_left},
 };
+
+const PREVIEW_SLANT: i32 = 46;
+const PREVIEW_DIVIDER_BAND_WIDTH: i32 = 28;
 
 pub struct Painter<'a> {
     pixmap: Pixmap,
@@ -37,9 +42,33 @@ impl<'a> Painter<'a> {
         self.fill_fullscreen_scrim(theme.background.with_alpha(88));
         self.draw_panel(&layout, theme);
         self.draw_preview(&layout, theme, wallpaper);
+        self.draw_diagonal_divider(&layout, theme);
         self.draw_search(&layout, model, theme);
         self.draw_entries(&layout, model, theme, icons);
         self.draw_error(&layout, model, theme);
+    }
+
+    fn fill_slanted_preview(&mut self, rect: Rect, radius: i32, slant: i32, color: Color) {
+        let rect = self.scale_rect(rect);
+        let radius = self.scale_len(radius);
+        let slant = self.scale_len(slant);
+
+        fill_slanted_preview_rect(&mut self.pixmap, rect, radius, slant, color);
+    }
+
+    fn image_cover_slanted_right(&mut self, rect: Rect, radius: i32, slant: i32, image: &RgbaImage) {
+        let rect = self.scale_rect(rect);
+        let radius = self.scale_len(radius);
+        let slant = self.scale_len(slant);
+
+        draw_image_cover_slanted_right(&mut self.pixmap, rect, radius, slant, image);
+    }
+
+    fn slanted_band(&mut self, rect: Rect, slant: i32, color: Color) {
+        let rect = self.scale_rect(rect);
+        let slant = self.scale_len(slant);
+
+        fill_slanted_band(&mut self.pixmap, rect, slant, color);
     }
 
     pub fn copy_to_wayland_canvas(&self, canvas: &mut [u8]) {
@@ -58,13 +87,19 @@ impl<'a> Painter<'a> {
     }
 
     fn draw_preview(&mut self, layout: &LauncherLayout, theme: &Theme, wallpaper: Option<&RgbaImage>) {
-        self.fill_round(layout.preview, style::surface::PREVIEW_RADIUS, theme.surface);
+        self.fill_slanted_preview(layout.preview, style::surface::PREVIEW_RADIUS, PREVIEW_SLANT, theme.surface);
 
         if let Some(wallpaper) = wallpaper {
-            self.image_cover(layout.preview, style::surface::PREVIEW_RADIUS, wallpaper);
-            self.fill_round(layout.preview, style::surface::PREVIEW_RADIUS, theme.background.with_alpha(64));
+            self.image_cover_slanted_right(layout.preview, style::surface::PREVIEW_RADIUS, PREVIEW_SLANT, wallpaper);
+
+            self.fill_slanted_preview(layout.preview, style::surface::PREVIEW_RADIUS, PREVIEW_SLANT, theme.background.with_alpha(64));
         } else {
-            self.fill_round(layout.preview.inset(12), style::surface::PREVIEW_RADIUS - 6, theme.surface_variant.with_alpha(120));
+            self.fill_slanted_preview(
+                layout.preview.inset(12),
+                style::surface::PREVIEW_RADIUS - 6,
+                PREVIEW_SLANT,
+                theme.surface_variant.with_alpha(120),
+            );
         }
     }
 
@@ -152,13 +187,6 @@ impl<'a> Painter<'a> {
         fill_round_rect(&mut self.pixmap, rect, radius, color);
     }
 
-    fn image_cover(&mut self, rect: Rect, radius: i32, image: &RgbaImage) {
-        let rect = self.scale_rect(rect);
-        let radius = self.scale_len(radius);
-
-        draw_image_cover(&mut self.pixmap, rect, radius, image);
-    }
-
     fn image_contain_lanczos(&mut self, rect: Rect, radius: i32, image: &RgbaImage) {
         let rect = self.scale_rect(rect);
         let radius = self.scale_len(radius);
@@ -212,7 +240,7 @@ impl<'a> Painter<'a> {
 
         if model.launcher.query().is_empty() {
             let placeholder_rect = if model.search_focused {
-                Rect::new(text_rect.x + 14, text_rect.y, text_rect.w - 14, text_rect.h)
+                Rect::new(text_rect.x + 8, text_rect.y, text_rect.w - 8, text_rect.h)
             } else {
                 text_rect
             };
@@ -222,7 +250,7 @@ impl<'a> Painter<'a> {
             self.text_left(text_rect, model.launcher.query(), style::font_size::QUERY, text_color);
         }
 
-        if model.search_focused {
+        if model.search_focused && model.caret_visible {
             self.draw_search_caret(text_rect, model, theme);
         }
     }
@@ -307,6 +335,14 @@ impl<'a> Painter<'a> {
 
     fn logical(&self, value: u32) -> i32 {
         (value as f32 / self.scale).round() as i32
+    }
+
+    fn draw_diagonal_divider(&mut self, layout: &LauncherLayout, theme: &Theme) {
+        let bottom_cut_x = layout.preview.x + layout.preview.w - PREVIEW_SLANT;
+
+        let band = Rect::new(bottom_cut_x - PREVIEW_DIVIDER_BAND_WIDTH, layout.preview.y, PREVIEW_DIVIDER_BAND_WIDTH, layout.preview.h);
+
+        self.slanted_band(band, PREVIEW_SLANT, theme.panel.with_alpha(96));
     }
 }
 

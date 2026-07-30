@@ -2,7 +2,10 @@ mod input;
 mod lifecycle;
 mod renderer;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use calloop::timer::{TimeoutAction, Timer};
+use calloop::{EventLoop, LoopHandle};
+use calloop_wayland_source::WaylandSource;
 use fontdue::Font;
 use image::RgbaImage;
 use smithay_client_toolkit::{
@@ -16,6 +19,7 @@ use smithay_client_toolkit::{
     },
     shm::{Shm, slot::SlotPool},
 };
+use std::time::Duration;
 use wayland_client::{Connection, QueueHandle, globals::registry_queue_init, protocol::wl_keyboard};
 
 use crate::{
@@ -28,6 +32,8 @@ use crate::{
     wallpaper_preview,
 };
 
+const CARET_BLINK_INTERVAL: Duration = Duration::from_millis(530);
+
 pub struct AppState {
     pub(super) registry_state: RegistryState,
     pub(super) seat_state: SeatState,
@@ -37,6 +43,8 @@ pub struct AppState {
     pub(super) shm: Shm,
     pool: SlotPool,
     pub(super) layer: LayerSurface,
+    pub(super) loop_handle: LoopHandle<'static, AppState>,
+    qh: QueueHandle<AppState>,
 
     pub(super) redraw_scheduled: bool,
     has_rendered: bool,
@@ -77,7 +85,7 @@ impl AppState {
         let font = load_ui_font()?;
 
         let conn = Connection::connect_to_env().context("no se pudo conectar a Wayland")?;
-        let (globals, mut event_queue) = registry_queue_init::<AppState>(&conn).context("registry_queue_init failed")?;
+        let (globals, event_queue) = registry_queue_init::<AppState>(&conn).context("registry_queue_init failed")?;
         let qh = event_queue.handle();
 
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor no disponible")?;
@@ -97,6 +105,9 @@ impl AppState {
 
         let pool = SlotPool::new((config.width * config.height * 4) as usize, &shm).context("no se pudo crear wl_shm SlotPool")?;
 
+        let mut event_loop: EventLoop<AppState> = EventLoop::try_new().context("no se pudo crear calloop EventLoop")?;
+        let loop_handle = event_loop.handle();
+
         let mut app = Self {
             registry_state: RegistryState::new(&globals),
             seat_state: SeatState::new(&globals, &qh),
@@ -106,6 +117,8 @@ impl AppState {
             shm,
             pool,
             layer,
+            loop_handle: loop_handle.clone(),
+            qh: qh.clone(),
             redraw_scheduled: false,
             has_rendered: false,
             should_close: false,
@@ -119,15 +132,33 @@ impl AppState {
             icon_cache,
         };
 
+        WaylandSource::new(conn, event_queue)
+            .insert(loop_handle)
+            .map_err(|err| anyhow!("WaylandSource insert failed: {err:?}"))?;
+
+        // Blinking search caret: a repeating timer flips visibility.
+        event_loop
+            .handle()
+            .insert_source(Timer::from_duration(CARET_BLINK_INTERVAL), |_deadline, _, state: &mut AppState| {
+                state.caret_blink_tick();
+                TimeoutAction::ToDuration(CARET_BLINK_INTERVAL)
+            })
+            .map_err(|err| anyhow!("caret timer insert failed: {err:?}"))?;
+
         while !app.model.configured {
-            event_queue.blocking_dispatch(&mut app).context("dispatch esperando configure")?;
+            event_loop.dispatch(None, &mut app).context("dispatch esperando configure")?;
         }
 
         while !app.should_close {
-            event_queue.blocking_dispatch(&mut app).context("event_queue dispatch")?;
+            event_loop.dispatch(None, &mut app).context("event_loop dispatch")?;
         }
 
         Ok(())
+    }
+
+    fn caret_blink_tick(&mut self) {
+        let qh = self.qh.clone();
+        self.dispatch(&qh, Msg::CaretBlink);
     }
 
     pub(super) fn dispatch(&mut self, qh: &QueueHandle<Self>, msg: Msg) {
