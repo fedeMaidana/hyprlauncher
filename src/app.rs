@@ -26,7 +26,7 @@ use crate::{
     config::Config,
     desktop::{IconCache, launch_entry, scan_desktop_entries},
     font::load_ui_font,
-    launcher::Launcher,
+    launcher::{Launcher, ListItem},
     model::{Cmd, Model, Msg, update},
     theme::Theme,
     usage::UsageStats,
@@ -79,9 +79,14 @@ impl AppState {
         let mut icon_cache = IconCache::new();
         let visible_rows = model.layout().visible_rows();
 
-        icon_cache.preload_entries(model.launcher.window_entries(visible_rows).into_iter().map(|(_, entry)| entry));
+        icon_cache.preload_entries(model.launcher.window_items(visible_rows).into_iter().filter_map(|item| match item {
+            ListItem::Entry { entry, .. } => Some(entry),
+            ListItem::Header(_) => None,
+        }));
 
         icon_cache.preload_entries(model.launcher.visible_entries());
+
+        icon_cache.preload_entries(model.launcher.pinned_entries(crate::style::pins::MAX));
 
         let font = load_ui_font()?;
 

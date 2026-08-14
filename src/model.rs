@@ -1,4 +1,4 @@
-use crate::{desktop::DesktopEntry, launcher::Launcher, layout::LauncherLayout};
+use crate::{desktop::DesktopEntry, launcher::Launcher, layout::LauncherLayout, style};
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -36,6 +36,7 @@ pub struct Model {
     pub configured: bool,
     pub search_focused: bool,
     pub caret_visible: bool,
+    pub hovered_pin: Option<usize>,
     pub error: Option<String>,
 }
 
@@ -49,14 +50,23 @@ impl Model {
             preferred_width,
             preferred_height,
             configured: false,
-            search_focused: false,
+            // El launcher captura el teclado apenas abre: el input arranca
+            // enfocado para invitar a tipear.
+            search_focused: true,
             caret_visible: true,
+            hovered_pin: None,
             error: None,
         }
     }
 
     pub fn layout(&self) -> LauncherLayout {
-        LauncherLayout::new(self.logical_width, self.logical_height, self.preferred_width, self.preferred_height)
+        LauncherLayout::new(
+            self.logical_width,
+            self.logical_height,
+            self.preferred_width,
+            self.preferred_height,
+            self.launcher.pinned_count(style::pins::MAX),
+        )
     }
 
     fn visible_rows(&self) -> usize {
@@ -93,30 +103,57 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::HoverAt { x, y } => {
             let layout = model.layout();
             let window_size = layout.visible_rows();
-            let row_count = model.launcher.window_count(window_size);
+            let row_count = model.launcher.window_len(window_size);
 
             let hovered = layout
                 .row_at(x, y, row_count)
-                .and_then(|row| model.launcher.index_for_window_row(row, window_size));
+                .and_then(|row| model.launcher.entry_index_at_row(row, window_size));
 
-            redraw_if(model.launcher.hover_index(hovered))
+            let pin_hovered = layout.pin_at(x, y, model.launcher.pinned_count(style::pins::MAX));
+            let pins_changed = model.hovered_pin != pin_hovered;
+            model.hovered_pin = pin_hovered;
+
+            redraw_if(model.launcher.hover_index(hovered) || pins_changed)
         }
-        Msg::ClearHover => redraw_if(model.launcher.hover_index(None)),
+        Msg::ClearHover => {
+            let pins_changed = model.hovered_pin.is_some();
+            model.hovered_pin = None;
+
+            let rows_changed = model.launcher.hover_index(None);
+
+            redraw_if(rows_changed || pins_changed)
+        }
         Msg::PointerPressedAt { x, y } => {
             let layout = model.layout();
 
             if layout.search.contains(x, y) {
+                // La × limpia la búsqueda (con área de click generosa).
+                if !model.launcher.query().is_empty() && layout.search_clear_rect().inset(-4).contains(x, y) {
+                    model.launcher.clear_query();
+                    model.search_focused = true;
+                    model.caret_visible = true;
+                    return vec![Cmd::Redraw];
+                }
+
                 let changed = !model.search_focused;
                 model.search_focused = true;
                 return redraw_if(changed);
             }
 
+            if let Some(entry) = layout
+                .pin_at(x, y, model.launcher.pinned_count(style::pins::MAX))
+                .and_then(|index| model.launcher.pinned_entry(index, style::pins::MAX))
+            {
+                model.search_focused = false;
+                return vec![Cmd::Launch(entry), Cmd::Exit];
+            }
+
             let window_size = layout.visible_rows();
-            let row_count = model.launcher.window_count(window_size);
+            let row_count = model.launcher.window_len(window_size);
 
             if let Some(index) = layout
                 .row_at(x, y, row_count)
-                .and_then(|row| model.launcher.index_for_window_row(row, window_size))
+                .and_then(|row| model.launcher.entry_index_at_row(row, window_size))
             {
                 model.search_focused = false;
                 model.launcher.select_index(index);

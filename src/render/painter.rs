@@ -5,7 +5,7 @@ use tiny_skia::Pixmap;
 use crate::{
     desktop::{DesktopEntry, IconCache},
     geometry::Rect,
-    launcher::name_match_range,
+    launcher::{ListItem, name_match_range},
     layout::LauncherLayout,
     model::Model,
     style,
@@ -14,9 +14,10 @@ use crate::{
 
 use super::{
     draw::{
-        draw_image_contain, draw_image_cover_slanted_right, draw_search_icon, fill_round_rect, fill_slanted_band, fill_slanted_preview_rect,
+        draw_clear_icon, draw_image_contain, draw_image_cover_slanted_right, draw_search_icon, fill_round_rect, fill_slanted_band,
+        fill_slanted_preview_rect,
     },
-    text::{TextSpec, TextSurface, draw_text_center, draw_text_left},
+    text::{TextSpec, TextSurface, draw_text_center, draw_text_left, measure_text_width},
 };
 
 const PREVIEW_SLANT: i32 = 46;
@@ -40,6 +41,16 @@ fn empty_state_message(query: &str) -> String {
     format!("Sin resultados para «{shown}»")
 }
 
+/// First alphanumeric letter of the app name, as icon fallback.
+fn entry_initial(entry: &DesktopEntry) -> String {
+    entry
+        .name
+        .chars()
+        .find(|ch| ch.is_alphanumeric())
+        .map(|ch| ch.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "•".to_owned())
+}
+
 pub struct Painter<'a> {
     pixmap: Pixmap,
     scale: f32,
@@ -56,28 +67,64 @@ impl<'a> Painter<'a> {
     }
 
     pub fn draw(&mut self, model: &Model, theme: &Theme, wallpaper: Option<&RgbaImage>, icons: &mut IconCache) {
-        let layout = LauncherLayout::new(model.logical_width, model.logical_height, model.preferred_width, model.preferred_height);
+        let layout = model.layout();
 
         self.fill_fullscreen_scrim(theme.background.with_alpha(88));
         self.draw_panel(&layout, theme);
         self.draw_preview(&layout, theme, wallpaper);
         self.draw_diagonal_divider(&layout, theme);
         self.draw_search(&layout, model, theme);
+        self.draw_pins(&layout, model, theme, icons);
         self.draw_entries(&layout, model, theme, icons);
         self.draw_hints(&layout, model, theme);
         self.draw_error(&layout, model, theme);
     }
 
-    /// Muted key guide inside the panel's bottom padding.
+    /// Muted key guide on the scrim, just below the panel.
     fn draw_hints(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme) {
         // The error banner uses this strip; it wins.
         if model.error.is_some() {
             return;
         }
 
-        let rect = Rect::new(layout.panel.x, layout.panel.y + layout.panel.h - 17, layout.panel.w, 14);
+        let rect = Rect::new(layout.panel.x, layout.panel.y + layout.panel.h + 9, layout.panel.w, 14);
 
-        self.text_center(rect, "↑↓ navegar · Enter abrir · Esc salir", style::font_size::HINT, theme.muted.with_alpha(150));
+        self.text_center(rect, "↑↓ navegar · Enter abrir · Esc salir", style::font_size::HINT, theme.muted.with_alpha(200));
+    }
+
+    /// Fixed tiles with the most-launched apps, pinned between search and results.
+    fn draw_pins(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, icons: &mut IconCache) {
+        let pinned = model.launcher.pinned_entries(style::pins::MAX);
+
+        if pinned.is_empty() {
+            return;
+        }
+
+        self.text_left(layout.pins_label, "Más usadas", style::font_size::HINT, theme.muted.with_alpha(190));
+
+        for (index, entry) in pinned.iter().enumerate() {
+            let tile = layout.pin_rect(index);
+            let hovered = model.hovered_pin == Some(index);
+
+            let (border_color, fill_color) = if hovered {
+                (theme.accent.with_alpha(150), theme.surface_variant)
+            } else {
+                (theme.panel_border.with_alpha(90), theme.surface.with_alpha(180))
+            };
+
+            self.fill_round(tile, style::pins::RADIUS + 1, border_color);
+            self.fill_round(tile.inset(1), style::pins::RADIUS, fill_color);
+
+            // Solo el logo, centrado en el tile.
+            let size = style::pins::ICON_SIZE;
+            let icon = Rect::new(tile.x + (tile.w - size) / 2, tile.y + (tile.h - size) / 2, size, size);
+
+            if let Some(app_icon) = icons.image_for(entry) {
+                self.image_contain_lanczos(icon, 0, &app_icon);
+            } else {
+                self.text_center(icon, &entry_initial(entry), 12.0, theme.muted);
+            }
+        }
     }
 
     fn fill_slanted_preview(&mut self, rect: Rect, radius: i32, slant: i32, color: Color) {
@@ -136,7 +183,7 @@ impl<'a> Painter<'a> {
     }
 
     fn draw_entries(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, icons: &mut IconCache) {
-        let visible = model.launcher.window_entries(layout.visible_rows());
+        let visible = model.launcher.window_items(layout.visible_rows());
 
         if visible.is_empty() {
             let rect = Rect::new(layout.list.x, layout.list.y + 28, layout.list.w, 40);
@@ -144,34 +191,59 @@ impl<'a> Painter<'a> {
             return;
         }
 
-        for (row_index, (entry_index, entry)) in visible.iter().enumerate() {
+        for (row_index, item) in visible.iter().enumerate() {
             let row = layout.row_rect(row_index);
-            let selected = *entry_index == model.launcher.selected();
-            let hovered = model.launcher.hovered() == Some(*entry_index);
 
-            let row_color = if selected {
-                theme.accent_soft
-            } else if hovered {
-                theme.surface_variant.with_alpha(170)
-            } else {
-                Color::from_rgba(0, 0, 0, 0)
-            };
+            match item {
+                ListItem::Header(letter) => self.draw_group_header(row, *letter, theme),
+                ListItem::Entry { index, entry } => {
+                    let selected = *index == model.launcher.selected();
+                    let hovered = model.launcher.hovered() == Some(*index);
 
-            if row_color.a > 0 {
-                self.fill_round(row, style::surface::ITEM_RADIUS, row_color);
+                    let row_color = if selected {
+                        theme.accent_soft
+                    } else if hovered {
+                        theme.surface_variant.with_alpha(170)
+                    } else {
+                        Color::from_rgba(0, 0, 0, 0)
+                    };
+
+                    if row_color.a > 0 {
+                        self.fill_round(row, style::surface::ITEM_RADIUS, row_color);
+                    }
+
+                    let app_icon = icons.image_for(entry);
+                    self.draw_entry(row, entry, selected, model.launcher.query(), theme, app_icon.as_deref());
+                }
             }
-
-            let app_icon = icons.image_for(entry);
-            self.draw_entry(row, entry, selected, model.launcher.query(), theme, app_icon.as_deref());
         }
 
         self.draw_overflow_indicator(layout, model, theme, &visible);
     }
 
-    /// Muted "n más…" in the panel's bottom strip when results overflow.
-    fn draw_overflow_indicator(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, visible: &[(usize, &DesktopEntry)]) {
+    /// Separador del abecedario: la letra del grupo y una línea fina.
+    fn draw_group_header(&mut self, row: Rect, letter: char, theme: &Theme) {
+        let label = Rect::new(row.x + 16, row.y, 22, row.h);
+
+        self.text_left(label, &letter.to_string(), 12.0, theme.accent);
+
+        let line = Rect::new(row.x + 44, row.y + row.h / 2, (row.w - 56).max(0), 1);
+
+        self.fill_round(line, 0, theme.panel_border.with_alpha(110));
+    }
+
+    /// Muted "n más…" below the panel's bottom-right corner when results overflow.
+    fn draw_overflow_indicator(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme, visible: &[ListItem<'_>]) {
         let total = model.launcher.result_count();
-        let last_shown = visible.last().map(|(index, _)| index + 1).unwrap_or(0);
+
+        let last_shown = visible
+            .iter()
+            .filter_map(|item| match item {
+                ListItem::Entry { index, .. } => Some(index + 1),
+                ListItem::Header(_) => None,
+            })
+            .max()
+            .unwrap_or(0);
 
         if last_shown >= total {
             return;
@@ -179,26 +251,20 @@ impl<'a> Painter<'a> {
 
         let text = format!("{} más…", total - last_shown);
         let width = self.measure_text_width(&text, style::font_size::HINT);
-        let x = layout.panel.x + layout.panel.w - 22 - width;
-        let rect = Rect::new(x, layout.panel.y + layout.panel.h - 17, width + 4, 14);
+        let x = layout.panel.x + layout.panel.w - 4 - width;
+        let rect = Rect::new(x, layout.panel.y + layout.panel.h + 9, width + 4, 14);
 
-        self.text_left(rect, &text, style::font_size::HINT, theme.muted.with_alpha(160));
+        self.text_left(rect, &text, style::font_size::HINT, theme.muted.with_alpha(200));
     }
 
     fn draw_entry(&mut self, row: Rect, entry: &DesktopEntry, selected: bool, query: &str, theme: &Theme, app_icon: Option<&RgbaImage>) {
-        let icon = Rect::new(row.x + 16, row.y + (row.h - 26) / 2, 26, 26);
+        let size = style::spacing::ICON_SIZE;
+        let icon = Rect::new(row.x + 16, row.y + (row.h - size) / 2, size, size);
 
         if let Some(app_icon) = app_icon {
             self.image_contain_lanczos(icon, 0, app_icon);
         } else {
-            let initial = entry
-                .name
-                .chars()
-                .find(|ch| ch.is_alphanumeric())
-                .map(|ch| ch.to_uppercase().collect::<String>())
-                .unwrap_or_else(|| "•".to_owned());
-
-            self.text_center(icon, &initial, 11.0, theme.muted);
+            self.text_center(icon, &entry_initial(entry), 11.0, theme.muted);
         }
 
         let text_x = icon.x + icon.w + 16;
@@ -262,7 +328,7 @@ impl<'a> Painter<'a> {
             return;
         };
 
-        let rect = Rect::new(layout.panel.x + 22, layout.panel.y + layout.panel.h - 28, layout.panel.w - 44, 18);
+        let rect = Rect::new(layout.panel.x + 4, layout.panel.y + layout.panel.h + 7, layout.panel.w - 8, 18);
 
         self.text_left(rect, error, style::font_size::HINT, theme.danger);
     }
@@ -297,47 +363,50 @@ impl<'a> Painter<'a> {
         draw_image_contain(&mut self.pixmap, draw_rect, radius, &resized);
     }
 
+    /// Input de búsqueda: lupa sin adornos, foco con anillo suave y una ×
+    /// para limpiar cuando hay texto. El ícono acompaña, no protagoniza.
     fn draw_search(&mut self, layout: &LauncherLayout, model: &Model, theme: &Theme) {
-        let (border_color, fill_color, text_color, placeholder_color) = if model.search_focused {
-            (theme.accent.with_alpha(170), theme.surface_variant, theme.foreground, theme.muted)
+        let focused = model.search_focused;
+        let query = model.launcher.query();
+
+        let (border_color, fill_color, icon_color) = if focused {
+            (theme.accent.with_alpha(150), theme.surface_variant.with_alpha(225), theme.accent)
         } else {
-            (
-                theme.panel_border.with_alpha(120),
-                theme.surface.with_alpha(210),
-                theme.foreground.with_alpha(220),
-                theme.muted.with_alpha(210),
-            )
+            (theme.panel_border.with_alpha(70), theme.surface.with_alpha(150), theme.muted.with_alpha(200))
         };
 
-        self.fill_round(layout.search, style::surface::ITEM_RADIUS + 1, border_color);
+        // Halo de foco, estilo focus-ring: apenas se insinúa.
+        if focused {
+            self.fill_round(layout.search.inset(-2), style::surface::SEARCH_RADIUS + 3, theme.accent.with_alpha(45));
+        }
 
-        self.fill_round(layout.search.inset(1), style::surface::ITEM_RADIUS, fill_color);
+        self.fill_round(layout.search, style::surface::SEARCH_RADIUS + 1, border_color);
+        self.fill_round(layout.search.inset(1), style::surface::SEARCH_RADIUS, fill_color);
 
-        let orb = Rect::new(
-            layout.search.x + 15,
-            layout.search.y + (layout.search.h - style::spacing::ICON_SIZE) / 2,
-            style::spacing::ICON_SIZE,
-            style::spacing::ICON_SIZE,
-        );
+        let size = style::spacing::SEARCH_ICON_SIZE;
+        let icon = Rect::new(layout.search.x + 14, layout.search.y + (layout.search.h - size) / 2, size, size);
 
-        self.fill_round(orb, style::spacing::ICON_SIZE / 2, theme.accent);
-        self.search_icon(orb.inset(7), theme.foreground.with_alpha(245));
+        self.search_icon(icon, icon_color);
 
-        let text_rect = Rect::new(layout.search.x + 54, layout.search.y, layout.search.w - 70, layout.search.h);
+        let text_x = icon.x + icon.w + 10;
+        let text_rect = Rect::new(text_x, layout.search.y, layout.search.x + layout.search.w - 44 - text_x, layout.search.h);
 
-        if model.launcher.query().is_empty() {
-            let placeholder_rect = if model.search_focused {
-                Rect::new(text_rect.x + 8, text_rect.y, text_rect.w - 8, text_rect.h)
-            } else {
-                text_rect
-            };
+        if query.is_empty() {
+            let placeholder_color = if focused { theme.muted } else { theme.muted.with_alpha(170) };
+
+            // Corrido 8px: deja lugar al caret a su izquierda, en ambos estados
+            // (posición estable, sin saltos al enfocar).
+            let placeholder_rect = Rect::new(text_rect.x + 8, text_rect.y, (text_rect.w - 8).max(0), text_rect.h);
 
             self.text_left(placeholder_rect, "Buscar aplicación", style::font_size::QUERY, placeholder_color);
         } else {
-            self.text_left(text_rect, model.launcher.query(), style::font_size::QUERY, text_color);
+            let text_color = if focused { theme.foreground } else { theme.foreground.with_alpha(220) };
+
+            self.text_left(text_rect, query, style::font_size::QUERY, text_color);
+            self.clear_icon(layout.search_clear_rect().inset(6), theme.muted.with_alpha(200));
         }
 
-        if model.search_focused && model.caret_visible {
+        if focused && model.caret_visible {
             self.draw_search_caret(text_rect, model, theme);
         }
     }
@@ -345,21 +414,33 @@ impl<'a> Painter<'a> {
     fn draw_search_caret(&mut self, text_rect: Rect, model: &Model, theme: &Theme) {
         let query = model.launcher.query();
 
+        // Vacío: a la izquierda del placeholder. Con texto: pegado al último
+        // glifo, como en cualquier input de verdad.
         let x = if query.is_empty() {
-            text_rect.x + 2
+            text_rect.x
         } else {
-            text_rect.x + self.measure_text_width(query, style::font_size::QUERY) + 6
+            text_rect.x + self.measure_text_width(query, style::font_size::QUERY) + 2
         };
 
-        let caret = Rect::new(x, text_rect.y + (text_rect.h - 20) / 2, 2, 20);
+        // Que el caret no se escape del input con queries largas.
+        let x = x.min(text_rect.x + text_rect.w - 2);
+
+        let caret = Rect::new(x, text_rect.y + (text_rect.h - 18) / 2, 2, 18);
 
         self.fill_round(caret, 1, theme.accent);
     }
 
-    fn measure_text_width(&self, text: &str, size: f32) -> i32 {
-        let width = text.chars().map(|ch| self.font.metrics(ch, size).advance_width).sum::<f32>();
+    fn clear_icon(&mut self, rect: Rect, color: Color) {
+        let rect = self.scale_rect(rect);
+        let stroke_width = self.scale_len(2);
 
-        width.round() as i32
+        draw_clear_icon(&mut self.pixmap, rect, color, stroke_width);
+    }
+
+    /// Misma medición que usa el renderer de texto (incluye letter-spacing),
+    /// así el caret y los anchos calculados coinciden con lo dibujado.
+    fn measure_text_width(&self, text: &str, size: f32) -> i32 {
+        measure_text_width(self.font, text, size).round() as i32
     }
 
     fn search_icon(&mut self, rect: Rect, color: Color) {

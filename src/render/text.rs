@@ -103,7 +103,7 @@ fn draw_text_baseline(surface: &mut TextSurface<'_>, font: &Font, text: &str, fo
     }
 }
 
-fn measure_text_width(font: &Font, text: &str, font_size: f32) -> f32 {
+pub fn measure_text_width(font: &Font, text: &str, font_size: f32) -> f32 {
     let mut width = 0.0;
     let mut chars = text.chars().peekable();
 

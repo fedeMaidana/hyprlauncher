@@ -9,6 +9,7 @@ Launcher overlay for Hyprland/Wayland built with Rust + Smithay Client Toolkit.
 - Desktop entry scanning from XDG application directories.
 - Hyprcolor palette integration through `~/.cache/hyprcolors/colors.json`.
 - Wallpaper preview from the `wallpaper` field exported by hyprcolor.
+- Pinned row with the 3 most-launched apps (frecency-based, clickable).
 - SHM + tiny-skia rendering. No GTK, no Qt, no Electron.
 
 ## Usage

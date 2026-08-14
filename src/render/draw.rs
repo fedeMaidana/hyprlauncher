@@ -95,6 +95,41 @@ pub fn draw_search_icon(pixmap: &mut Pixmap, rect: Rect, color: Color, stroke_wi
     }
 }
 
+/// Una × de dos trazos, para el botón de limpiar la búsqueda.
+pub fn draw_clear_icon(pixmap: &mut Pixmap, rect: Rect, color: Color, stroke_width: i32) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+
+    let x0 = rect.x as f32;
+    let y0 = rect.y as f32;
+    let x1 = (rect.x + rect.w) as f32;
+    let y1 = (rect.y + rect.h) as f32;
+
+    let mut pb = PathBuilder::new();
+
+    pb.move_to(x0, y0);
+    pb.line_to(x1, y1);
+    pb.move_to(x1, y0);
+    pb.line_to(x0, y1);
+
+    let Some(path) = pb.finish() else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+
+    let stroke = Stroke {
+        width: stroke_width.max(1) as f32,
+        line_cap: LineCap::Round,
+        ..Default::default()
+    };
+
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+}
+
 pub fn fill_slanted_preview_rect(pixmap: &mut Pixmap, rect: Rect, radius: i32, slant: i32, color: Color) {
     let Some(path) = slanted_preview_path(rect, radius, slant) else {
         return;

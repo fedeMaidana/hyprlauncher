@@ -10,7 +10,7 @@ use wayland_client::{
     protocol::{wl_keyboard, wl_pointer, wl_surface},
 };
 
-use crate::{app::AppState, model::Msg};
+use crate::{app::AppState, layout::LauncherLayout, model::Msg, style};
 
 pub(super) const KEY_REPEAT_STEPS: usize = 1;
 const MAX_WHEEL_STEPS_PER_EVENT: usize = 6;
@@ -129,13 +129,36 @@ impl AppState {
     fn update_cursor_for_position(&mut self, conn: &Connection, x: f64, y: f64) {
         let layout = self.model.layout();
 
-        let icon = if layout.search.contains(x, y) {
+        let over_clear = !self.model.launcher.query().is_empty() && layout.search_clear_rect().inset(-4).contains(x, y);
+
+        let icon = if over_clear {
+            CursorIcon::Pointer
+        } else if layout.search.contains(x, y) {
             CursorIcon::Text
+        } else if self.pointer_over_clickable(&layout, x, y) {
+            CursorIcon::Pointer
         } else {
             CursorIcon::Default
         };
 
         self.set_cursor_icon(conn, icon);
+    }
+
+    /// Manito sobre lo lanzable: tiles fijados y filas de apps (no separadores).
+    fn pointer_over_clickable(&self, layout: &LauncherLayout, x: f64, y: f64) -> bool {
+        let launcher = &self.model.launcher;
+
+        if layout.pin_at(x, y, launcher.pinned_count(style::pins::MAX)).is_some() {
+            return true;
+        }
+
+        let window_size = layout.visible_rows();
+        let row_count = launcher.window_len(window_size);
+
+        layout
+            .row_at(x, y, row_count)
+            .and_then(|row| launcher.entry_index_at_row(row, window_size))
+            .is_some()
     }
 
     fn set_cursor_icon(&mut self, conn: &Connection, icon: CursorIcon) {
